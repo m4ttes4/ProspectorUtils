@@ -1,9 +1,11 @@
 module DataUtils
 
 export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
-export get_z, get_phot_flux, get_phot_wave, get_spec_cont, get_spec_flux, get_spec_err, get_spec_wave, get_spec_calib, get_mass
-export labels, bestfit, maggies2μJy
-export get_obs_sflux,get_obs_swave,get_obs_serr,get_obs_pflux,get_obs_pwave,get_obs_perr
+export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr
+export get_obs_pflux,get_obs_pwave,get_obs_perr,get_bf_sflux,get_bf_swave,get_bf_pflux,get_bf_pwave
+export get_bf_cont, get_bf_calib, logmass_to_masses
+
+
 
 using HDF5
 using DataFrames
@@ -143,10 +145,10 @@ end
 # --------------------------------
 #--- Accessor Functions ---------
 # --------------------------------
-
 get_z(p::ProspectResults) = get(p.runparams, "redshift", nothing)
 labels(p::ProspectResults) = names(p.chain)
 bestfit(p::ProspectResults) = get(p.bestfit, "parameter", nothing)
+
 
 get_obs_sflux(p::ProspectResults) = get(p.obs, "spectrum", nothing)
 get_obs_swave(p::ProspectResults) = get(p.obs, "wavelength", nothing)
@@ -156,15 +158,15 @@ get_obs_pflux(p::ProspectResults) = get(p.obs, "maggies", nothing)
 get_obs_pwave(p::ProspectResults) = get(p.obs, "phot_wave", nothing)
 get_obs_perr(p::ProspectResults) = get(p.obs, "maggies_unc", nothing)
 
+get_bf_sflux(p::ProspectResults) = get(p.bestfit, "spectrum", nothing)
+get_bf_swave(p::ProspectResults) = get(p.bestfit, "wavelength", nothing)
 
-get_spec_flux(p::ProspectResults) = get(p.obs, "spectrum", nothing)
-get_spec_err(p::ProspectResults) = get(p.obs, "unc", nothing)
-get_spec_wave(p::ProspectResults) = get(p.obs, "wavelength", nothing)
-get_spec_cont(p::ProspectResults) = get(p.bestfit, "speccont", nothing)
-get_spec_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
+get_bf_pflux(p::ProspectResults) = get(p.bestfit, "photometry", nothing)
+get_bf_pwave(p::ProspectResults) = get(p.bestfit, "phot_wave", nothing)
 
-get_phot_wave(p::ProspectResults) = get(p.obs, "phot_wave", nothing)
-get_phot_flux(p::ProspectResults) = get(p.obs, "maggies", nothing)
+get_bf_cont(p::ProspectResults) = get(p.bestfit, "speccont", nothing)
+get_bf_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
+
 
 get_mass(p::ProspectResults) = first(p.bestfit["parameter"][findall(x -> x == "logmass", p.sampling["theta_labels"])]) - p.bestfit["mfrac"]
 maggies2μJy(mag::Real) = mag * 1e6 * 3631
@@ -239,6 +241,38 @@ function _build_chain_df(sampling_data::Dict,
 
     # L'opzione makeunique=true è una buona pratica per evitare errori con etichette duplicate
     return DataFrame(mat, labels, makeunique=true)
+end
+
+mydiff(bins) = 10^bins[2] - 10^bins[1]
+
+"""
+    logmass_to_masses(logmass, logsfr_ratios, agebins) -> Vector{Float64}
+
+Converts a value of log₁₀(∑ᵢ Mᵢ) and an array of log₁₀(SFR_j / SFR₍ⱼ₊₁₎) into Mᵢ values.
+
+## Arguments
+- `logmass::Real`: The log₁₀ value of the total mass ∑ Mᵢ.
+- `logsfr_ratios::Vector{Real}`: Vector of size (nbins-1) containing the log₁₀ of SFR ratios.
+- `agebins::Vector{Vector{Real}}`: Matrix of size (nbins, 2) with the age bin limits in log₁₀(years).
+
+## Returns
+- `Vector{Float64}`: An array containing the Mᵢ values.
+
+## Notes
+- Assumes that j=0 (in Python) corresponds to the most recent bin.
+- This function follows the behavior of `prospector`.
+- Assumes that `logmass` is the median value from the sampling chain rather than the best-fit value.
+"""
+function logmass_to_masses(logmass::T, logsfr_ratios::Vector{T}, agebins::Vector{Tuple{T,T}}) where {T<:Real}
+    nbins = size(agebins, 1)
+    sratios = 10 .^ clamp.(logsfr_ratios, -10, 10)
+    dt = mydiff.(agebins)
+    coeffs = ones(nbins)
+    for j in 2:nbins
+        coeffs[j] = dt[j] / (dt[1] * prod(sratios[1:j-1]))
+    end
+    m1 = 10^logmass ./ sum(coeffs)
+    return m1 .* coeffs
 end
 
 
