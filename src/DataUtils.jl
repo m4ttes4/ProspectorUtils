@@ -2,7 +2,7 @@ module DataUtils
 
 export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
 export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr
-export get_obs_pflux,get_obs_pwave,get_obs_perr,get_bf_sflux,get_bf_swave,get_bf_pflux,get_bf_pwave
+export get_obs_pflux, get_obs_pwave, get_obs_perr, get_bf_sflux, get_full_grid,get_bf_sed, get_bf_swave, get_bf_pflux, get_bf_pwave
 export get_bf_cont, get_bf_calib, logmass_to_masses, n_bins
 
 
@@ -167,6 +167,9 @@ get_bf_pwave(p::ProspectResults) = get(p.bestfit, "phot_wave", nothing)
 
 get_bf_cont(p::ProspectResults) = get(p.bestfit, "speccont", nothing)
 get_bf_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
+
+get_bf_sed(p::ProspectResults) = get(p.bestfit, "full_sed", nothing)
+get_full_grid(p::ProspectResults) = get(p.bestfit, "full_grid", nothing)
 
 
 get_mass(p::ProspectResults) = first(p.bestfit["parameter"][findall(x -> x == "logmass", p.sampling["theta_labels"])]) - p.bestfit["mfrac"]

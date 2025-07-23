@@ -10,11 +10,11 @@ using Printf
 
 # import Base.|>
 export AbstractProspectPlot, AbstractSedPlot, AbstractPhotoPlot, AbstractErrors
-export ObsSpecPlot, BFSpecPlot, DensityPlot, ObsPhotoPlot, BFPhotoPlot, BinnedSFH
-export Errors, MaskPlot, Calibration, SFHErrors
-export PlotCommand
+export ObsSpecPlot, BFSpecPlot, DensityPlot, ObsPhotoPlot, BFPhotoPlot, BinnedSFH, BFSedPlot
+export Errors, MaskedSpecPlot, Calibration, SFHErrors
+export PlotCommand, Mask#, PhotoMask, SpecMask
 export get_plot_function, get_error_plot_function
-export get_plot_data#, validate_plot_data
+export get_plot_data
 export render!
 
 
@@ -29,22 +29,35 @@ abstract type AbstractErrors <: AbstractMultiplier end
 # === SED Plot Structs ===
 # ====================================="ObsSpecPlot(; kwargs...)\n\nSED plot based on observed data."
 
+mutable struct MaskedSpecPlot <: AbstractSedPlot
+    kwargs::Dict{Symbol,Any}
+    mask::Dict{Symbol,Any}
+end
 
-# --- Plot Structs Senza plotfunc ---
+# --- Plot mutable Structs Senza plotfunc ---
 "ObsSpecPlot(; kwargs...)\n\nSED plot based on observed data."
-struct ObsSpecPlot <: AbstractSedPlot
+mutable struct ObsSpecPlot <: AbstractSedPlot
     kwargs::Dict{Symbol,Any}
 end
 ObsSpecPlot(; kwargs...) = ObsSpecPlot(Dict{Symbol,Any}(kwargs))
 
 "BFSpecPlot(; kwargs...)\nSED plot based on best-fit model output."
-struct BFSpecPlot <: AbstractSedPlot
+mutable struct BFSpecPlot <: AbstractSedPlot
     kwargs::Dict{Symbol,Any}
 end
 BFSpecPlot(; kwargs...) = BFSpecPlot(Dict{Symbol,Any}(kwargs))
 
+
+"BFSedPlot(; kwargs...)\nSED plot based on best-fit model output."
+mutable struct BFSedPlot <: AbstractSedPlot
+    kwargs::Dict{Symbol,Any}
+end
+BFSedPlot(; kwargs...) = BFSedPlot(Dict{Symbol,Any}(kwargs))
+
+
+
 "DensityPlot(ignored; kwargs...)\n\nDensity plot of best-fit parameter distributions."
-struct DensityPlot <: AbstractProspectPlot
+mutable struct DensityPlot <: AbstractProspectPlot
     ignored::Vector{String}
     kwargs::Dict{Symbol,Any}
 end
@@ -52,38 +65,38 @@ DensityPlot(ignored::Vector{String}; kwargs...) = DensityPlot(ignored, Dict{Symb
 DensityPlot() = DensityPlot(String[], Dict{Symbol,Any}())
 
 "ObsPhotoPlot(; kwargs...)\n\nPhotometry plot for observed data."
-struct ObsPhotoPlot <: AbstractPhotoPlot
+mutable struct ObsPhotoPlot <: AbstractPhotoPlot
     kwargs::Dict{Symbol,Any}
 end
 ObsPhotoPlot(; kwargs...) = ObsPhotoPlot(Dict{Symbol,Any}(kwargs))
 
 "BFPhotoPlot(; kwargs...)\n\nPhotometry plot for best-fit model predictions."
-struct BFPhotoPlot <: AbstractPhotoPlot
+mutable struct BFPhotoPlot <: AbstractPhotoPlot
     kwargs::Dict{Symbol,Any}
 end
 BFPhotoPlot(; kwargs...) = BFPhotoPlot(Dict{Symbol,Any}(kwargs))
 
-struct BinnedSFH <: AbstractProspectPlot
+mutable struct BinnedSFH <: AbstractProspectPlot
     kwargs::Dict{Symbol, Any}
 end
 BinnedSFH(;kwargs...) = BinnedSFH(Dict(kwargs))
 
 
-struct SedErrors <: AbstractErrors
+mutable struct SedErrors <: AbstractErrors
     kwargs::Dict{Symbol,Any}
 end
 SedErrors(;kwargs...) = SedErrors(Dict(kwargs))
 
-struct PhotoErrors <: AbstractErrors
+mutable struct PhotoErrors <: AbstractErrors
     kwargs::Dict{Symbol,Any}
 end
 PhotoErrors(; kwargs...) = PhotoErrors(Dict(kwargs))
 
-struct SFHErrors <: AbstractErrors
+mutable struct SFHErrors <: AbstractErrors
     kwargs::Dict{Symbol,Any}
 end
 SFHErrors(;kwargs...) = SFHErrors(Dict(kwargs))
-struct Errors <: AbstractMultiplier
+mutable struct Errors <: AbstractMultiplier
     kwargs::Dict{Symbol,Any}
 end
 
@@ -103,14 +116,44 @@ function (self::Errors)(p::AbstractProspectPlot)
 end
 
 
-struct Calibration{T}
-    key::Union{Nothing,String}
-    poly::Union{Nothing,Vector{T}}
+struct Calibration
+    # key::Union{Nothing,String}
+    # poly::Union{Nothing,Vector{T}}
+    calibration::Union{String, Vector{<: Real}}
 end
-Calibration() = Calibration("speccal", nothing)
+
+Calibration() = Calibration("speccal")
+
+function _apply_calibration!(res::ProspectResults, ::String, p::AbstractProspectPlot, out::Vector{<:Real})
+    calib = get_bf_calib(res)
+    pop!(p.kwargs, :calibration)
+    return out ./ calib
+end
+function _apply_calibration!(::ProspectResults, cal::Vector{<:Real}, p::AbstractProspectPlot, out::Vector{<:Real})
+    pop!(p.kwargs, :calibration)
+    return out ./ cal
+end
 
 
+struct Mask <: AbstractMultiplier
+    kwargs::Dict{Symbol, Any}
+end
+Mask(; kwargs...) = Mask(Dict(kwargs))
+# struct PhotoMask <: AbstractMultiplier
+#     kwargs::Dict{Symbol,Any}
+# end
+# struct SpecMask <: AbstractMultiplier
+#     kwargs::Dict{Symbol,Any}
+# end
 
+# Mask(;kwargs...) = Mask(Dict(kwargs))
+
+# _mask(::AbstractSedPlot, kwargs) = SpecMask(kwargs)
+# _mask(::AbstractPhotoPlot, kwargs) = PhotoMask(kwargs)
+
+# function (self::Mask)(p::AbstractProspectPlot)
+#     _mask(p, self.kwargs)
+# end
 
 # =====================================
 # ===  PlotCommand ===
@@ -122,6 +165,23 @@ struct PlotCommand
 end
 
 
+function Base.:|>(left::AbstractProspectPlot, right::Calibration)
+    kwargs = copy(left.kwargs)
+    kwargs[:calibration] = right.calibration
+    return typeof(left)(kwargs)
+end
+
+function Base.:|>(left::MaskedSpecPlot, right::Calibration)
+    kwargs = copy(left.kwargs)
+    kwargs[:calibration] = right.calibration
+    return MaskedSpecPlot(kwargs, left.mask)
+end
+
+
+
+function Base.:|>(left::AbstractSedPlot, right::Mask)
+    return MaskedSpecPlot(left.kwargs, right.kwargs)
+end
 
 # 1. Plot base diventa un PlotCommand con il primo modificatore
 function Base.:|>(left::AbstractProspectPlot, right::AbstractMultiplier)
@@ -133,9 +193,8 @@ end
 function Base.:|>(left::PlotCommand, right::AbstractMultiplier)
     # Errors(left) = Sed/Photo Error
     multiplier_instance = right(left.base_plot)
-    push!(left.multipliers, multiplier_instance)
 
-    return left
+    return PlotCommand(left.base_plot, [left.multipliers..., multiplier_instance])
 end
 
 
@@ -152,10 +211,16 @@ get_plot_function(::BFSpecPlot) = CairoMakie.stairs!
 get_plot_function(::ObsPhotoPlot) = CairoMakie.scatter!
 get_plot_function(::BFPhotoPlot) = CairoMakie.scatter!
 
+get_plot_function(::BFSedPlot) = CairoMakie.stairs!
+
 get_plot_function(::DensityPlot) = CairoMakie.density!
 
 get_plot_function(::PhotoErrors) = CairoMakie.errorbars!
 get_plot_function(::SedErrors) = CairoMakie.band!
+# get_plot_function(::SpecMask) = CairoMakie.stairs!
+# get_plot_function(::PhotoMask) = CairoMakie.scatter!
+get_plot_function(::MaskedSpecPlot) = CairoMakie.stairs!
+
 
 get_plot_function(::BinnedSFH) = CairoMakie.stairs!
 get_plot_function(::SFHErrors) = CairoMakie.Band!
@@ -165,21 +230,38 @@ get_plot_function(::SFHErrors) = CairoMakie.Band!
 # =====================================
 function get_plot_data end
 
+function get_segments(x, y, mask)
+    segments = []
+    start = 1
+    current_mask = mask[1]
+    for i in 2:length(x)
+        if mask[i] != current_mask
+            push!(segments, (x[start:i], y[start:i], current_mask))
+            start = i
+            current_mask = mask[i]
+        end
+    end
+    # Aggiungi l'ultimo segmento
+    push!(segments, (x[start:end], y[start:end], current_mask))
+    return segments
+end
+
 
 # Caso generale: Dati per funzioni di plot (x, y) come scatter!, lines!, stairs!
 function get_plot_data(result::ProspectResults, ::ObsPhotoPlot, ::Union{typeof(CairoMakie.scatter!),typeof(CairoMakie.lines!)})
 
     y = get_obs_pflux(result) |> copy .|> maggies2μJy
-    x = get_obs_pwave(result) |> copy .|> maggies2μJy
+    x = get_obs_pwave(result) |> copy
     return x, y
 end
 
-function get_plot_data(result::ProspectResults, ::ObsSpecPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+function get_plot_data(result::ProspectResults, p::ObsSpecPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
 
     y = get_obs_sflux(result) |> copy .|> maggies2μJy
-    x = get_obs_swave(result) |> copy .|> maggies2μJy
-
-    # NOTE aggiungere qui la parte della calibrazione?
+    x = get_obs_swave(result) |> copy
+    if haskey(p.kwargs, :calibration)
+        y .= _apply_calibration!(result, p.kwargs[:calibration], p, y)
+    end
     return x, y
 end
 
@@ -187,22 +269,26 @@ end
 function get_plot_data(result::ProspectResults, ::BFPhotoPlot, ::Union{typeof(CairoMakie.scatter!),typeof(CairoMakie.lines!)})
 
     y = get_bf_pflux(result) |> copy .|> maggies2μJy
-    x = get_bf_pwave(result) |> copy .|> maggies2μJy
+    x = get_bf_pwave(result) |> copy 
     return x, y
 end
 
-function get_plot_data(result::ProspectResults, ::BFSpecPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+function get_plot_data(result::ProspectResults, p::BFSpecPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
 
     y = get_bf_sflux(result) |> copy .|> maggies2μJy
-    x = get_bf_swave(result) |> copy .|> maggies2μJy
+    x = get_bf_swave(result) |> copy 
+    if haskey(p.kwargs, :calibration)
+        y .= _apply_calibration!(result, p.kwargs[:calibration], p, y)
+    end
     return x, y
 end
+
 
 
 function get_plot_data(result::ProspectResults, ::SedErrors, ::typeof(CairoMakie.band!))
 
     y = get_obs_sflux(result) |> copy .|> maggies2μJy
-    x = get_obs_swave(result) |> copy .|> maggies2μJy
+    x = get_obs_swave(result) |> copy 
     z = get_obs_serr(result) |> copy .|> maggies2μJy
 
     return x, y, z
@@ -212,10 +298,48 @@ end
 function get_plot_data(result::ProspectResults, ::PhotoErrors, ::typeof(CairoMakie.errorbars!))
 
     y = get_obs_pflux(result) |> copy .|> maggies2μJy
-    x = get_obs_pwave(result) |> copy .|> maggies2μJy
+    x = get_obs_pwave(result) |> copy 
     z = get_obs_perr(result) |> copy .|> maggies2μJy
 
     return x, y, z
+end
+
+# Caso generale: Dati per funzioni di plot (x, y) come scatter!, lines!, stairs!
+function get_plot_data(result::ProspectResults, ::BFSedPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+
+    y = get_bf_sed(result) |> copy .|> maggies2μJy
+    x = get_full_grid(result) |> copy 
+    return x, y
+end
+
+# function get_plot_data(result::ProspectResults, ::PhotoMask,::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+
+#     y = get_obs_pflux(result) |> copy .|> maggies2μJy
+#     x = get_obs_pwave(result) |> copy .|> maggies2μJy
+#     z = get(result.obs,"photo_mask", nothing)
+
+#     return x, y, z
+# end
+
+# function get_plot_data(result::ProspectResults, ::SpceMask,::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+
+#     y = get_obs_pflux(result) |> copy .|> maggies2μJy
+#     x = get_obs_pwave(result) |> copy .|> maggies2μJy
+#     z = get(result.bestfit, "mask", nothing) 
+
+#     return x, y, z
+# end
+
+function get_plot_data(result::ProspectResults, p::MaskedSpecPlot, ::Union{typeof(CairoMakie.stairs!),typeof(CairoMakie.lines!)})
+    y = get_obs_sflux(result) |> copy .|> maggies2μJy
+    x = get_obs_swave(result) |> copy 
+    z = get(result.obs, "mask", nothing) .|> Bool
+
+    if haskey(p.kwargs, :calibration)
+        y .= _apply_calibration!(result, p.kwargs[:calibration], p, y)
+    end
+
+    return x,y,z
 end
 
 get_plot_data(result::ProspectResults, ::BinnedSFH, ::Union{typeof(CairoMakie.lines!),typeof(CairoMakie.stairs!)}) = get_sfh(result)
@@ -248,6 +372,36 @@ function render!(ax::CairoMakie.Axis, result::ProspectResults, cmd::PlotCommand)
         end
     end
     render!(ax, result, cmd.base_plot)
+end
+
+"Renders a specific plot on an axis using data from the result."
+function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::MaskedSpecPlot)
+    # 1. Get the actual plotting function (even if customized)
+    plot_func = get_plot_function(plot)
+
+    # 2. assume no want to plot errors
+    wave, flux, mask = get_plot_data(result, plot, plot_func)
+
+    if isnothing(wave) || isnothing(flux) || isnothing(mask)
+        @warn "One between wave, flux, mask is nothing"
+        return nothing
+    end
+
+
+    seg = get_segments(wave, flux, mask)
+
+
+    # # lines!(ax, wave, flux, ;plot.kwargs)
+    for (xs, ys, is_true) in seg
+
+        if is_true
+            plot_func(ax, xs, ys; plot.kwargs...)
+        else
+            plot_func(ax, xs, ys; plot.mask...)
+        end
+    end
+   
+    return ax
 end
 
 
@@ -318,7 +472,6 @@ end
 
 
 
-
 function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::BinnedSFH)
     plot_func = get_plot_function(plot)
     plot_data = get_plot_data(result, plot, plot_func)
@@ -377,6 +530,7 @@ function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors)
     # Calcola il logaritmo della SFR
     yy = log10.(vcat(sfr[1], sfr))
 
+    # little hack
     s = stairs!(ax, xx, yy; color=:transparent)
 
 
