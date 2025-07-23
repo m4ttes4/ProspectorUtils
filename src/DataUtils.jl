@@ -3,7 +3,7 @@ module DataUtils
 export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
 export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr
 export get_obs_pflux,get_obs_pwave,get_obs_perr,get_bf_sflux,get_bf_swave,get_bf_pflux,get_bf_pwave
-export get_bf_cont, get_bf_calib, logmass_to_masses
+export get_bf_cont, get_bf_calib, logmass_to_masses, n_bins
 
 
 
@@ -148,6 +148,7 @@ end
 get_z(p::ProspectResults) = get(p.runparams, "redshift", nothing)
 labels(p::ProspectResults) = names(p.chain)
 bestfit(p::ProspectResults) = get(p.bestfit, "parameter", nothing)
+n_bins(p::ProspectResults) = sum(occursin.("logsfr_ratios", names(p.chain))) + 1
 
 
 get_obs_sflux(p::ProspectResults) = get(p.obs, "spectrum", nothing)
@@ -171,6 +172,12 @@ get_bf_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
 get_mass(p::ProspectResults) = first(p.bestfit["parameter"][findall(x -> x == "logmass", p.sampling["theta_labels"])]) - p.bestfit["mfrac"]
 maggies2μJy(mag::Real) = mag * 1e6 * 3631
 maggies2μJy(::Nothing) = nothing
+
+function bestfit(p::ProspectResults, param::String)
+    return first(p.bestfit["parameter"][findall(x -> x == param, p.sampling["theta_labels"])]) 
+end
+
+
 # --------------------------------
 #--- Run Params Reader -----------
 # --------------------------------

@@ -2,6 +2,7 @@ module PlotUtils
 using ..DataUtils
 using ..SFHUtils
 
+
 using CairoMakie
 using Statistics
 using Printf
@@ -156,7 +157,7 @@ get_plot_function(::DensityPlot) = CairoMakie.density!
 get_plot_function(::PhotoErrors) = CairoMakie.errorbars!
 get_plot_function(::SedErrors) = CairoMakie.band!
 
-get_plot_function(::BinnedSFH) = CairoMakie.lines!
+get_plot_function(::BinnedSFH) = CairoMakie.stairs!
 get_plot_function(::SFHErrors) = CairoMakie.Band!
 
 # =====================================
@@ -177,6 +178,8 @@ function get_plot_data(result::ProspectResults, ::ObsSpecPlot, ::Union{typeof(Ca
 
     y = get_obs_sflux(result) |> copy .|> maggies2μJy
     x = get_obs_swave(result) |> copy .|> maggies2μJy
+
+    # NOTE aggiungere qui la parte della calibrazione?
     return x, y
 end
 
@@ -215,7 +218,7 @@ function get_plot_data(result::ProspectResults, ::PhotoErrors, ::typeof(CairoMak
     return x, y, z
 end
 
-get_plot_data(result::ProspectResults, ::BinnedSFH, ::typeof(CairoMakie.lines!)) = get_sfh(result)
+get_plot_data(result::ProspectResults, ::BinnedSFH, ::Union{typeof(CairoMakie.lines!),typeof(CairoMakie.stairs!)}) = get_sfh(result)
 
 #plot_data = get_plot_data(result, plot_spec, plot_func)
 
@@ -314,6 +317,76 @@ function render!(layout, result::ProspectResults, plot::DensityPlot)
 end
 
 
+
+
+function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::BinnedSFH)
+    plot_func = get_plot_function(plot)
+    plot_data = get_plot_data(result, plot, plot_func)
+
+    plot_func(ax, plot_data...; plot.kwargs...)
+    
+    return ax
+end
+
+
+function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors)
+    z = get_z(result)
+
+    idx = findall(x -> occursin.("logsfr_ratios", x), names(result.chain))
+    nbins = length(idx) + 1 
+    agebins = zred_to_agebins(z, nbins)
+
+    # calcol errori
+    labels = names(result.chain)[findall(x -> occursin.("logsfr_ratios", x), names(result.chain))]
+    err_low = []
+    err_upp = []
+    for name in labels
+        low, med, upp = quantile(result.chain[!, name], [0.16, 0.5, 0.84])
+        push!(err_low, med - low)
+        push!(err_upp, upp - med)
+    end
+    # force the bins
+    pushfirst!(err_low, copy(err_low[begin]))
+    pushfirst!(err_upp, copy(err_upp[begin]))
+
+    push!(err_low, copy(err_low[end]))
+    push!(err_upp, copy(err_upp[end]))
+
+    reverse!(err_low)
+    reverse!(err_upp)
+
+    idx_logmass = findall(x -> x == "logmass", result.sampling["theta_labels"])
+    logmass = result.bestfit["parameter"][idx_logmass][1]
+
+    sfr_ratios = [median(result.chain[!, name]) for name in labels]
+
+    # Calcola la massa per ogni bin di età
+    mass = SFHUtils.logmass_to_masses(logmass, sfr_ratios, agebins)
+
+    # Estrai i valori di età iniziali e finali dai bin
+    initial_bins = [b[1] for b in agebins]
+    final_bins = [b[2] for b in agebins]
+
+    # Calcola la SFR usando la massa e i bin di età
+    sfr = mass ./ (10.0 .^ final_bins .- 10.0 .^ initial_bins)
+
+    # Crea l'array di età in giga anni
+    xx = 10 .^ initial_bins[1] ./ 1e9 .+ 10 .^ final_bins ./ 1e9
+    pushfirst!(xx, 1e-9)
+
+    # Calcola il logaritmo della SFR
+    yy = log10.(vcat(sfr[1], sfr))
+
+    s = stairs!(ax, xx, yy; color=:transparent)
+
+
+    _plot_band_error(s, err_upp, err_low, ax; plot.kwargs...)
+
+end
+
+
+
+
 function margin_confidence_default_formatter(low, mid, high, label::String)
     largest_error = max(abs(high), abs(low))
     # Fallback for series with no variance
@@ -374,71 +447,29 @@ function margin_confidence_default_formatter(low, mid, high, label::String)
 end
 
 
-function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors)
-    plot_func = get_plot_function(plot)
-    data = get_plot_data(result, plot, plot_func)    
-    ### ADD SFH QUANTILES!
+function stairpts(s)#s = stariplot
+    pts = s.plots[1].converted[1][]
+    [p[1] for p in pts], [p[2] for p in pts]
 end
 
-function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::BinnedSFH)
-    plot_func = get_plot_function(plot)
-    plot_data = get_plot_data(result, plot, plot_func)
+function _plot_band_error(s, errupp, errlow, ax; kwargs...)
+    bins, flux_bins = stairpts(s)
+    k = 1
+    err_upper = errupp[1]
+    err_lower = errlow[1]
+    for i in 1:length(bins)-1
+        if !iseven(i)
+            err_upper = errupp[k]
+            err_lower = errlow[k]
+            k += 1
+        end
+        lw = [flux_bins[i] - err_lower, flux_bins[i] - err_lower]
+        up = [flux_bins[i] + err_upper, flux_bins[i] + err_upper]
 
-    plot_func(ax, plot_data...; plot.kwargs...)
-    return ax
+        band!(ax, [bins[i], bins[i+1]], lw, up; kwargs...)
+    end
 end
-    # z = get_z(result)
 
-    # idx = findall(x -> occursin.("logsfr_ratios", x), names(result.chain))
-    # nbins = length(idx) + 1 #length(result.bestfit["agebins"]') ÷ 2
-    # agebins = zred_to_agebins(z, nbins)
-
-    # # calcol errori
-    # labels = names(result.chain)[findall(x -> occursin.("logsfr_ratios", x), names(result.chain))]
-    # err_low = []
-    # err_upp = []
-    # for name in labels
-    #     low, med, upp = quantile(result.chain[!, name], [0.16, 0.5, 0.84])
-    #     push!(err_low, med - low)
-    #     push!(err_upp, upp - med)
-    # end
-    # # force the bins
-    # pushfirst!(err_low, copy(err_low[begin]))
-    # pushfirst!(err_upp, copy(err_upp[begin]))
-
-    # push!(err_low, copy(err_low[end]))
-    # push!(err_upp, copy(err_upp[end]))
-
-    # reverse!(err_low)
-    # reverse!(err_upp)
-
-    # logmass = get_mass(result)
-
-    # sfr_ratios = [median(result.chain[!, name]) for name in labels]
-
-    # # Calcola la massa per ogni bin di età
-    # mass = logmass_to_masses(logmass, sfr_ratios, agebins)
-
-    # # Estrai i valori di età iniziali e finali dai bin
-    # initial_bins = [b[1] for b in agebins]
-    # final_bins = [b[2] for b in agebins]
-
-    # # Calcola la SFR usando la massa e i bin di età
-    # sfr = mass ./ (10.0 .^ final_bins .- 10.0 .^ initial_bins)
-
-    # # Crea l'array di età in giga anni
-    # xx = 10 .^ initial_bins[1] ./ 1e9 .+ 10 .^ final_bins ./ 1e9
-    # pushfirst!(xx, 1e-9)
-
-    # # Calcola il logaritmo della SFR
-    # yy = log10.(vcat(sfr[1], sfr))
-
-    # s = stairs!(ax, xx, yy, step=:center, color=(:black, 1))
-
-
-    # _plot_band_error(s, err_upp, err_low, ax; plot.kwargs...)
-
-# end
 
 end #MODULE
 

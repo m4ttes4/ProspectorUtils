@@ -205,7 +205,7 @@ Compute the star formation history (SFH) from a `ProspectResults` object.
 function get_sfh(results::ProspectResults; normalize::Bool=false, safe::Bool=true, return_mass::Bool=false)
     z = get_z(results)
 
-    nbins = sum(occursin.("logsfr_ratios", names(results.chain)))+1 
+    nbins = n_bins(results)#sum(occursin.("logsfr_ratios", names(results.chain)))+1 
     agebins = zred_to_agebins(z, nbins)
     mass = logmass_to_masses(results, agebins)
 
@@ -224,7 +224,6 @@ function get_sfh(results::ProspectResults; normalize::Bool=false, safe::Bool=tru
     end
     
     lookback = 10 .^ initial_bins[1] ./ 1e9 .+ 10 .^ final_bins ./ 1e9
-    # lookback = @. (10.0^initial_bins) / 1e9 + (10.0^final_bins) / 1e9
     lookback = vcat(1e-9, lookback)  # Prepend tiny lookback time to match bins
 
     if normalize
@@ -235,4 +234,37 @@ function get_sfh(results::ProspectResults; normalize::Bool=false, safe::Bool=tru
 
     return return_mass ? (lookback, sfh, mass) : (lookback, sfh)
 end
+
+
+# function get_sfh_quantiles(results::ProspectResults; normalize::Bool=false, save::Bool=true, return_mass::Bool=false)
+#     z = get_z(results)
+
+#     nbins = n_bins(results)#sum(occursin.("logsfr_ratios", names(results.chain)))+1 
+#     agebins = zred_to_agebins(z, nbins)
+#     mass = logmass_to_masses(results, z, [0.16, 0.5, 0.84])
+
+#     initial_bins = first.(agebins)
+#     final_bins = last.(agebins)
+
+#     Δt = @. 10.0^final_bins - 10.0^initial_bins
+#     sfr = map(x -> x ./ Δt, mass)
+
+#     if safe
+#         for bin in sfr
+#             for i in eachindex(bin)
+#                 @inbounds x = bin[i]
+#                 @inbounds bin[i] = (isfinite(x) && x > 0) ? x : 1e-30
+#             end
+#         end
+#     end
+
+#     if normalize
+#         @warn "Currently normalize the SFH quantile is broken"
+#         sfr ./= sum(sfr)
+#     end
+
+#     sfh = log10.(vcat([sfr[1]], sfr))
+#     return sfh
+# end
+
 end # module
