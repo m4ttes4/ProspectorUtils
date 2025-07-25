@@ -1,7 +1,7 @@
 module DataUtils
 
 export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
-export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr
+export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr, get_mass
 export get_obs_pflux, get_obs_pwave, get_obs_perr, get_bf_sflux, get_full_grid,get_bf_sed, get_bf_swave, get_bf_pflux, get_bf_pwave
 export get_bf_cont, get_bf_calib, logmass_to_masses, n_bins
 
