@@ -3,7 +3,7 @@ module DataUtils
 export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
 export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr, get_mass
 export get_obs_pflux, get_obs_pwave, get_obs_perr, get_bf_sflux, get_full_grid,get_bf_sed, get_bf_swave, get_bf_pflux, get_bf_pwave
-export get_bf_cont, get_bf_calib, logmass_to_masses, n_bins
+export get_bf_cont, get_bf_calib, n_bins
 
 
 
@@ -176,6 +176,8 @@ get_mass(p::ProspectResults) = first(p.bestfit["parameter"][findall(x -> x == "l
 maggies2μJy(mag::Real) = mag * 1e6 * 3631
 maggies2μJy(::Nothing) = nothing
 
+
+
 function bestfit(p::ProspectResults, param::String)
     return first(p.bestfit["parameter"][findall(x -> x == param, p.sampling["theta_labels"])]) 
 end
@@ -255,35 +257,35 @@ end
 
 mydiff(bins) = 10^bins[2] - 10^bins[1]
 
-"""
-    logmass_to_masses(logmass, logsfr_ratios, agebins) -> Vector{Float64}
+# """
+#     logmass_to_masses(logmass, logsfr_ratios, agebins) -> Vector{Float64}
 
-Converts a value of log₁₀(∑ᵢ Mᵢ) and an array of log₁₀(SFR_j / SFR₍ⱼ₊₁₎) into Mᵢ values.
+# Converts a value of log₁₀(∑ᵢ Mᵢ) and an array of log₁₀(SFR_j / SFR₍ⱼ₊₁₎) into Mᵢ values.
 
-## Arguments
-- `logmass::Real`: The log₁₀ value of the total mass ∑ Mᵢ.
-- `logsfr_ratios::Vector{Real}`: Vector of size (nbins-1) containing the log₁₀ of SFR ratios.
-- `agebins::Vector{Vector{Real}}`: Matrix of size (nbins, 2) with the age bin limits in log₁₀(years).
+# ## Arguments
+# - `logmass::Real`: The log₁₀ value of the total mass ∑ Mᵢ.
+# - `logsfr_ratios::Vector{Real}`: Vector of size (nbins-1) containing the log₁₀ of SFR ratios.
+# - `agebins::Vector{Vector{Real}}`: Matrix of size (nbins, 2) with the age bin limits in log₁₀(years).
 
-## Returns
-- `Vector{Float64}`: An array containing the Mᵢ values.
+# ## Returns
+# - `Vector{Float64}`: An array containing the Mᵢ values.
 
-## Notes
-- Assumes that j=0 (in Python) corresponds to the most recent bin.
-- This function follows the behavior of `prospector`.
-- Assumes that `logmass` is the median value from the sampling chain rather than the best-fit value.
-"""
-function logmass_to_masses(logmass::T, logsfr_ratios::Vector{T}, agebins::Vector{Tuple{T,T}}) where {T<:Real}
-    nbins = size(agebins, 1)
-    sratios = 10 .^ clamp.(logsfr_ratios, -10, 10)
-    dt = mydiff.(agebins)
-    coeffs = ones(nbins)
-    for j in 2:nbins
-        coeffs[j] = dt[j] / (dt[1] * prod(sratios[1:j-1]))
-    end
-    m1 = 10^logmass ./ sum(coeffs)
-    return m1 .* coeffs
-end
+# ## Notes
+# - Assumes that j=0 (in Python) corresponds to the most recent bin.
+# - This function follows the behavior of `prospector`.
+# - Assumes that `logmass` is the median value from the sampling chain rather than the best-fit value.
+# """
+# function logmass_to_masses(logmass::T, logsfr_ratios::Vector{T}, agebins::Vector{Tuple{T,T}}) where {T<:Real}
+#     nbins = size(agebins, 1)
+#     sratios = 10 .^ clamp.(logsfr_ratios, -10, 10)
+#     dt = mydiff.(agebins)
+#     coeffs = ones(nbins)
+#     for j in 2:nbins
+#         coeffs[j] = dt[j] / (dt[1] * prod(sratios[1:j-1]))
+#     end
+#     m1 = 10^logmass ./ sum(coeffs)
+#     return m1 .* coeffs
+# end
 
 
 function Base.show(io::IO, pr::ProspectResults)

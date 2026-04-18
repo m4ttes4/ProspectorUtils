@@ -10,7 +10,7 @@ using ..DataUtils
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
-export zred_to_agebins, build_agebins, logmass_to_masses, get_sfh, pyshow
+export zred_to_agebins, build_agebins, logmass_to_masses, get_sfh, pyshow, get_sfr
 
 """
     SFHUtils – Star‑Formation History utilities
@@ -78,7 +78,8 @@ end
     build_agebins(; tuniv=13.7, nbins=7) -> Vector{NTuple{2,Float64}}
 
 Return Prospector‑style age bins for a universe age `tuniv` (Gyr).
-
+This function has been tested with prospector bin creation function 
+and has the same results
 Keyword arguments
 -----------------
 * `tuniv::Real = 13.7` – Universe age in **Gyr**.
@@ -100,6 +101,7 @@ function build_agebins(; tuniv::Real=13.7, nbins::Integer=7)
     # Construct the agebins matrix
     agebins = [(agelims[i], agelims[i+1]) for i in 1:(length(agelims)-1)]#
     #agebins = hcat(agelims[1:end-1], agelims[2:end])
+    return agebins
 end
 
 """
@@ -151,10 +153,11 @@ end
 
 function logmass_to_masses(p::ProspectResults)::Vector{Float64}
     labels = filter(x -> occursin("logsfr_ratios", x), names(p.chain))
-    ratios = map(name -> median(skipmissing(p.chain[!, name])), labels)
-    agebins = zred_to_agebins(get_z(p), length(ratios))
-
-    logmass = float(median(skipmissing(p.chain[!, "logmass"])))
+    # ratios = map(name -> median(skipmissing(p.chain[!, name])), labels)
+    ratios = map(name -> bestfit(p, name), labels)
+    agebins = zred_to_agebins(get_z(p), n_bins(p))
+    #TODO questa logmass è la bestfit!
+    logmass = get_mass(p)#float(median(skipmissing(p.chain[!, "logmass"])))
     return logmass_to_masses(logmass, ratios, agebins)
 end
 
@@ -168,7 +171,7 @@ function logmass_to_masses(
     logmasses = quantile(p.chain.logmass, quantiles)
     sfr_labels = filter(name -> occursin("logsfr_ratios", name), names(p.chain))
     ratios = map(name -> median(skipmissing(p.chain[!, name])), sfr_labels)
-    agebins = zred_to_agebins(float(zred), length(ratios))
+    agebins = zred_to_agebins(float(zred), n_bins(p))
 
     return [logmass_to_masses(mass, ratios, agebins) for mass in logmasses]
 end
@@ -236,6 +239,12 @@ function get_sfh(results::ProspectResults; normalize::Bool=false, safe::Bool=tru
 end
 
 
+
+@views function get_sfr(results::ProspectResults; nbins=3)
+    lookback, sfh = get_sfh(results)
+
+    return mean(sfh[1:nbins])
+end
 # function get_sfh_quantiles(results::ProspectResults; normalize::Bool=false, save::Bool=true, return_mass::Bool=false)
 #     z = get_z(results)
 

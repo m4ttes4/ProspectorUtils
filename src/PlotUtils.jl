@@ -599,6 +599,7 @@ end
 function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::BinnedSFH)
     plot_func = get_plot_function(plot)
     plot_data = get_plot_data(result, plot, plot_func)
+    #@info plot_data[1]
 
     plot_func(ax, plot_data...; plot.kwargs...)
     
@@ -606,7 +607,7 @@ function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::BinnedSFH)
 end
 
 
-function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors)
+function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors; step=:center)
     z = get_z(result)
 
     idx = findall(x -> occursin.("logsfr_ratios", x), names(result.chain))
@@ -655,7 +656,7 @@ function render!(ax::CairoMakie.Axis, result::ProspectResults, plot::SFHErrors)
     yy = log10.(vcat(sfr[1], sfr))
 
     # little hack
-    s = stairs!(ax, xx, yy; color=:transparent)
+    s = stairs!(ax, xx, yy; color=:transparent, step=step)
 
 
     _plot_band_error(s, err_upp, err_low, ax; plot.kwargs...)
