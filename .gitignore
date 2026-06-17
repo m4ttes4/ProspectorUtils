@@ -1,0 +1,4 @@
+.DS_Store
+.CondaPkg/
+/docs/build/
+*.cov

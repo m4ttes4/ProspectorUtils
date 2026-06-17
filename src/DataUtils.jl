@@ -1,32 +1,28 @@
 module DataUtils
 
-export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs
-export maggies2μJy, get_z,labels,bestfit,get_obs_sflux,get_obs_swave,get_obs_serr, get_mass
-export get_obs_pflux, get_obs_pwave, get_obs_perr, get_bf_sflux, get_full_grid,get_bf_sed, get_bf_swave, get_bf_pflux, get_bf_pwave
-export get_bf_cont, get_bf_calib, n_bins
-
-
+export AbstractProspectResult, ProspectResults, ProspectorObs, ProspectorBestFit, ProspectorSampling
+export Estimator, BestFit, Median, WeightedMedian, default_estimator, has_weights, estimate
+export quantiles, weighted_quantile, weighted_median
+export get_mass, maggies2μJy, get_z, labels, bestfit, n_bins
+export get_obs_sflux, get_obs_swave, get_obs_serr, get_obs_pflux, get_obs_pwave, get_obs_perr
+export get_bf_sflux, get_bf_swave, get_bf_pflux, get_bf_pwave, get_bf_sed, get_bf_cont, get_bf_calib, get_full_grid
 
 using HDF5
 using DataFrames
 using JSON
-using PythonCall
+using StatsBase
+using Printf
 
-# using LinearAlgebra
-# -------------------------------
-#--- Constants for HDF5 groups ---
-# -------------------------------
 const H5_GROUPS = ("obs", "bestfit", "sampling")
+const WEIGHTS_COL = "weights"
 
-# -------------------------------
-#--- Abstract Types & Structs ---
-# -------------------------------
+# =============================================================================
+# Types
+# =============================================================================
 
 abstract type AbstractProspectResult end
 
-"""
-Container for full Prospector output
-"""
+"Container for a full Prospector output: MCMC chain plus the obs/bestfit/sampling groups."
 mutable struct ProspectResults <: AbstractProspectResult
     chain::DataFrame
     runparams::Dict{String,Any}
@@ -35,288 +31,260 @@ mutable struct ProspectResults <: AbstractProspectResult
     obs::Dict{String,Any}
 end
 
-mutable struct ProspectorObs <: AbstractProspectResult
-    obs::Dict{String,Any}
-end
-ProspectorObs(r::ProspectResults) = ProspectorObs(r.obs)
-
-mutable struct ProspectorBestFit <: AbstractProspectResult
-    bestfit::Dict{String,Any}
-end
-ProspectorBestFit(r::ProspectResults) = ProspectorBestFit(r.bestfit)
-
-mutable struct ProspectorSampling <: AbstractProspectResult
-    sampling::Dict{String,Any}
-end
-ProspectorSampling(r::ProspectResults) = ProspectorSampling(r.sampling)
-
-
-# -------------------------------
-#--- Low-level HDF5 Reader -------
-# -------------------------------
-
-function _read_h5_internal(f::HDF5.File, path::String, ::Val{true})
-    # Controlla prima se il path esiste per evitare errori
-    if !haskey(f, path)
-        return Dict{String,Any}() # Restituisci un dizionario vuoto se il path non esiste
-    end
-
-    attributes = attrs(f[path])
-    res = Dict{String,Any}()
-    for key in keys(attributes)
-        tmp = read_attribute(f[path], key)
-        # Semplifichiamo il parsing del JSON
-        if isa(tmp, AbstractString) || isa(tmp, Vector{UInt8})
-            str_val = isa(tmp, AbstractString) ? tmp : String(tmp)
-            try
-                res[key] = JSON.parse(str_val)
-            catch
-                res[key] = str_val # fallback se non è JSON valido
-            end
-        else
-            res[key] = tmp
+for (T, field) in ((:ProspectorObs, :obs), (:ProspectorBestFit, :bestfit), (:ProspectorSampling, :sampling))
+    @eval begin
+        mutable struct $T <: AbstractProspectResult
+            $field::Dict{String,Any}
         end
+        $T(r::ProspectResults) = $T(getfield(r, $(QuoteNode(field))))
+    end
+end
+
+# =============================================================================
+# Point estimators
+# =============================================================================
+
+"""
+How to collapse a posterior into a point estimate.
+`BestFit` reads the maximum-likelihood parameters, `Median` the chain median,
+`WeightedMedian` the chain median weighted by the (dynesty) importance weights.
+"""
+abstract type Estimator end
+struct BestFit <: Estimator end
+struct Median <: Estimator end
+struct WeightedMedian <: Estimator end
+
+"True when the chain carries a `weights` column (dynesty importance weights)."
+has_weights(p::ProspectResults) = WEIGHTS_COL in names(p.chain)
+
+"`WeightedMedian` when weights are available, otherwise `Median`."
+default_estimator(p::ProspectResults) = has_weights(p) ? WeightedMedian() : Median()
+
+estimate(p::ProspectResults, param::AbstractString, ::BestFit) = bestfit(p, param)
+estimate(p::ProspectResults, param::AbstractString, ::Median) = median(skipmissing(p.chain[!, param]))
+function estimate(p::ProspectResults, param::AbstractString, ::WeightedMedian)
+    has_weights(p) || throw(ArgumentError("chain has no `$WEIGHTS_COL` column; WeightedMedian unavailable"))
+    return weighted_median(p.chain[!, param], p.chain[!, WEIGHTS_COL])
+end
+
+# =============================================================================
+# Weighted quantiles
+# =============================================================================
+
+_floatv(x) = Float64.(collect(x))
+
+"""
+    weighted_quantile(values, weights, q) -> Float64 or Vector
+
+Weighted quantile(s) of `values`, delegating to StatsBase
+(`quantile(values, weights(w), q)`). `q` may be a scalar or a vector.
+"""
+function weighted_quantile(values, weights, q::Real)
+    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
+    return quantile(_floatv(values), StatsBase.weights(_floatv(weights)), q)
+end
+function weighted_quantile(values, weights, q)
+    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
+    return quantile(_floatv(values), StatsBase.weights(_floatv(weights)), _floatv(q))
+end
+
+"Median of weighted samples (StatsBase)."
+function weighted_median(values, weights)
+    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
+    return median(_floatv(values), StatsBase.weights(_floatv(weights)))
+end
+
+# =============================================================================
+# HDF5 reader
+# =============================================================================
+
+# Attributes (Val{true}): JSON-decode string attributes when possible.
+function _read_group(f::HDF5.File, path::String, ::Val{true})
+    haskey(f, path) || return Dict{String,Any}()
+    res = Dict{String,Any}()
+    for key in keys(attrs(f[path]))
+        res[key] = _maybe_json(read_attribute(f[path], key))
     end
     return res
 end
 
-# Metodo per at=false: restituisce SEMPRE il tipo di read()
-function _read_h5_internal(f::HDF5.File, path::String, ::Val{false})
+# Datasets (Val{false}): plain read.
+_read_group(f::HDF5.File, path::String, ::Val{false}) = haskey(f, path) ? read(f[path]) : nothing
 
-    !haskey(f, path) && return nothing
+_read_group(f::HDF5.File, path::String; at::Bool=false) = _read_group(f, path, Val(at))
 
-    return read(f[path])
-end
-
-function _read_h5(f::HDF5.File, path::String; at::Bool=false)
-    return _read_h5_internal(f, path, Val(at))
-end
-
-
-"""
-Generic reader for all HDF5 groups in one go
-Returns NamedTuple(:obs, :bestfit, :sampling) of Dicts
-"""
-function _read_all_groups(f::HDF5.File; at::Bool=false)
-    data = ntuple(i -> _read_h5(f, H5_GROUPS[i]; at=at), length(H5_GROUPS))
-    return (; obs=data[1], bestfit=data[2], sampling=data[3])
-end
-
-# --------------------------------
-#--- Public API Constructors -----
-# --------------------------------
-"""
-Main constructor: REFACTORED to perform all I/O once and pass pre-loaded data 
-to helper functions, ensuring high performance and maintainability.
-"""
-function ProspectResults(filename::String; verbose::Bool=true)
-    # Apri il file una sola volta per tutte le operazioni di lettura
-    h5open(filename, "r") do f
-        # --- 1. I/O OTTIMIZZATO: Leggi tutti i dati e gli attributi una sola volta ---
-        attrs_nt = _read_all_groups(f; at=true)
-        data_nt = _read_all_groups(f; at=false)
-
-        # Leggi i parametri di run una sola volta
-        run_params_dict = _get_run_params(f)
-
-        # Unisci gli attributi nei rispettivi dizionari di dati
-        merge!(data_nt.obs, attrs_nt.obs)
-        merge!(data_nt.bestfit, attrs_nt.bestfit)
-        merge!(data_nt.sampling, attrs_nt.sampling)
-
-        # Aggiungi riferimenti ai dati di lunghezza d'onda per convenienza
-        data_nt.bestfit["wavelength"] = data_nt.obs["wavelength"]
-        data_nt.bestfit["phot_wave"] = data_nt.obs["phot_wave"]
-
-        # --- 2. CHIAMATA CORRETTA: Passa solo i dati necessari a `_build_chain_df` ---
-        # La funzione riceve i dizionari `sampling`, non l'intero `NamedTuple`.
-        df_chain = _build_chain_df(data_nt.sampling, attrs_nt.sampling, run_params_dict; verbose=verbose)
-
-
-        # Costruisci l'oggetto finale con tutti i dati processati
-        return ProspectResults(df_chain,
-            run_params_dict, # Usa la struct type-stable
-            data_nt.bestfit,
-            data_nt.sampling,
-            data_nt.obs)
+function _maybe_json(x)
+    (x isa AbstractString || x isa Vector{UInt8}) || return x
+    str = x isa AbstractString ? x : String(x)
+    return try
+        JSON.parse(str)
+    catch
+        str
     end
 end
 
-# --------------------------------
-#--- Accessor Functions ---------
-# --------------------------------
-get_z(p::ProspectResults) = get(p.runparams, "redshift", nothing)
-labels(p::ProspectResults) = names(p.chain)
-bestfit(p::ProspectResults) = get(p.bestfit, "parameter", nothing)
-n_bins(p::ProspectResults) = sum(occursin.("logsfr_ratios", names(p.chain))) + 1
+# NamedTuple(:obs, :bestfit, :sampling) of the three groups.
+_read_all_groups(f::HDF5.File; at::Bool=false) =
+    NamedTuple{(:obs, :bestfit, :sampling)}(ntuple(i -> _read_group(f, H5_GROUPS[i]; at=at), length(H5_GROUPS)))
 
-
-get_obs_sflux(p::ProspectResults) = get(p.obs, "spectrum", nothing)
-get_obs_swave(p::ProspectResults) = get(p.obs, "wavelength", nothing)
-get_obs_serr(p::ProspectResults) = get(p.obs, "unc", nothing)
-
-get_obs_pflux(p::ProspectResults) = get(p.obs, "maggies", nothing)
-get_obs_pwave(p::ProspectResults) = get(p.obs, "phot_wave", nothing)
-get_obs_perr(p::ProspectResults) = get(p.obs, "maggies_unc", nothing)
-
-get_bf_sflux(p::ProspectResults) = get(p.bestfit, "spectrum", nothing)
-get_bf_swave(p::ProspectResults) = get(p.bestfit, "wavelength", nothing)
-
-get_bf_pflux(p::ProspectResults) = get(p.bestfit, "photometry", nothing)
-get_bf_pwave(p::ProspectResults) = get(p.bestfit, "phot_wave", nothing)
-
-get_bf_cont(p::ProspectResults) = get(p.bestfit, "speccont", nothing)
-get_bf_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
-
-get_bf_sed(p::ProspectResults) = get(p.bestfit, "full_sed", nothing)
-get_full_grid(p::ProspectResults) = get(p.bestfit, "full_grid", nothing)
-
-
-get_mass(p::ProspectResults) = first(p.bestfit["parameter"][findall(x -> x == "logmass", p.sampling["theta_labels"])]) - p.bestfit["mfrac"]
-maggies2μJy(mag::Real) = mag * 1e6 * 3631
-maggies2μJy(::Nothing) = nothing
-
-
-
-function bestfit(p::ProspectResults, param::String)
-    return first(p.bestfit["parameter"][findall(x -> x == param, p.sampling["theta_labels"])]) 
-end
-
-
-# --------------------------------
-#--- Run Params Reader -----------
-# --------------------------------
-
-"""
-Read `run_params` attribute and parse JSON
-Takes open file handle f
-"""
 function _get_run_params(f::HDF5.File)::Dict{String,Any}
     try
         raw = read_attribute(f, "run_params")
-        j = isa(raw, AbstractString) ? raw : String(raw)
-        return JSON.parse(j)
+        return JSON.parse(raw isa AbstractString ? raw : String(raw))
     catch e
         @warn "Failed to parse run_params: $e"
         return Dict{String,Any}()
     end
 end
 
-# --------------------------------
-#--- Chain DataFrame Builder -----
-# --------------------------------
+"""
+    ProspectResults(filename; verbose=true)
 
+Load a Prospector HDF5 output file. All datasets and attributes are read once,
+the MCMC chain is assembled into a `DataFrame` (with a `weights` column when the
+sampler provides importance weights).
+"""
+function ProspectResults(filename::String; verbose::Bool=true)
+    h5open(filename, "r") do f
+        attrs_nt = _read_all_groups(f; at=true)
+        data_nt = _read_all_groups(f; at=false)
+        run_params = _get_run_params(f)
+
+        merge!(data_nt.obs, attrs_nt.obs)
+        merge!(data_nt.bestfit, attrs_nt.bestfit)
+        merge!(data_nt.sampling, attrs_nt.sampling)
+
+        # convenience: expose the wavelength grids on the bestfit group too
+        data_nt.bestfit["wavelength"] = data_nt.obs["wavelength"]
+        data_nt.bestfit["phot_wave"] = data_nt.obs["phot_wave"]
+
+        chain = _build_chain_df(data_nt.sampling, attrs_nt.sampling, run_params; verbose=verbose)
+        return ProspectResults(chain, run_params, data_nt.bestfit, data_nt.sampling, data_nt.obs)
+    end
+end
 
 """
-Build DataFrame for MCMC chain from pre-loaded data.
-This version avoids redundant I/O and minimizes memory allocations by using views.
+Build the MCMC chain `DataFrame` from pre-loaded sampling data. Layout depends on
+the sampler (dynesty vs emcee); views avoid copies until DataFrame construction.
+A `weights` column is appended when `sampling/weights` is present.
 """
-function _build_chain_df(sampling_data::Dict,
-    sampling_attrs::Dict,
-    run_params::Dict;
-    verbose::Bool=true)::DataFrame
-
+function _build_chain_df(sampling_data::Dict, sampling_attrs::Dict, run_params::Dict; verbose::Bool=true)::DataFrame
     labels = get(sampling_attrs, "theta_labels", String[])
     chain = get(sampling_data, "chain", Float64[])
-
-    # Se la chain non esiste o è vuota, restituisci un DataFrame vuoto.
     isempty(chain) && return DataFrame()
 
-    # Anche qui, l'accesso a run_params è più efficiente se si usa una struct tipizzata
     has_dyn = get(run_params, "dynesty", false)
     has_e = get(run_params, "emcee", false)
+    has_dyn && has_e && @warn "Both dynesty and emcee flags set—using dynesty layout"
 
-    if has_dyn && has_e
-        @warn "Both dynesty and emcee flags true—defaulting to dynesty behavior"
-    end
-
-    local mat
     if has_dyn
         verbose && @info "Building chain from Dynesty sampler"
-        # 2. NO ALLOCATION: PermutedDimsArray è una vista, non una copia.
         mat = PermutedDimsArray(chain, (2, 1))
     elseif has_e
         verbose && @info "Building chain from Emcee sampler"
         nl, nch, nwk = size(chain)
-        # 2. LOW ALLOCATION: reshape e ' creano viste. La materializzazione 
-        # avviene al momento della creazione del DataFrame, ma abbiamo evitato la prima copia.
         mat = reshape(chain, nl, nch * nwk)'
     else
         mat = chain
     end
 
-    # Controllo di sicurezza per le etichette
-    if !isempty(labels) && size(mat, 2) != length(labels)
-        @warn "Mismatch between number of columns ($(size(mat, 2))) and labels ($(length(labels))). Using generic labels."
-        return DataFrame(mat, :auto)
+    df = if !isempty(labels) && size(mat, 2) == length(labels)
+        DataFrame(mat, labels, makeunique=true)
+    else
+        !isempty(labels) && @warn "Column/label mismatch ($(size(mat, 2)) vs $(length(labels))); using generic labels"
+        DataFrame(mat, :auto)
     end
 
-    # L'opzione makeunique=true è una buona pratica per evitare errori con etichette duplicate
-    return DataFrame(mat, labels, makeunique=true)
+    weights = get(sampling_data, WEIGHTS_COL, nothing)
+    if weights !== nothing
+        w = vec(weights)
+        length(w) == nrow(df) ? (df[!, WEIGHTS_COL] = Float64.(w)) :
+            (verbose && @warn "weights length $(length(w)) ≠ chain rows $(nrow(df)); skipping")
+    end
+    return df
 end
 
-mydiff(bins) = 10^bins[2] - 10^bins[1]
+# =============================================================================
+# Accessors
+# =============================================================================
 
-# """
-#     logmass_to_masses(logmass, logsfr_ratios, agebins) -> Vector{Float64}
+get_z(p::ProspectResults) = get(p.runparams, "redshift", nothing)
+"Parameter names in the chain, excluding the `weights` column."
+labels(p::ProspectResults) = filter(!=(WEIGHTS_COL), names(p.chain))
+bestfit(p::ProspectResults) = get(p.bestfit, "parameter", nothing)
+n_bins(p::ProspectResults) = count(n -> occursin("logsfr_ratios", n), names(p.chain)) + 1
 
-# Converts a value of log₁₀(∑ᵢ Mᵢ) and an array of log₁₀(SFR_j / SFR₍ⱼ₊₁₎) into Mᵢ values.
-
-# ## Arguments
-# - `logmass::Real`: The log₁₀ value of the total mass ∑ Mᵢ.
-# - `logsfr_ratios::Vector{Real}`: Vector of size (nbins-1) containing the log₁₀ of SFR ratios.
-# - `agebins::Vector{Vector{Real}}`: Matrix of size (nbins, 2) with the age bin limits in log₁₀(years).
-
-# ## Returns
-# - `Vector{Float64}`: An array containing the Mᵢ values.
-
-# ## Notes
-# - Assumes that j=0 (in Python) corresponds to the most recent bin.
-# - This function follows the behavior of `prospector`.
-# - Assumes that `logmass` is the median value from the sampling chain rather than the best-fit value.
-# """
-# function logmass_to_masses(logmass::T, logsfr_ratios::Vector{T}, agebins::Vector{Tuple{T,T}}) where {T<:Real}
-#     nbins = size(agebins, 1)
-#     sratios = 10 .^ clamp.(logsfr_ratios, -10, 10)
-#     dt = mydiff.(agebins)
-#     coeffs = ones(nbins)
-#     for j in 2:nbins
-#         coeffs[j] = dt[j] / (dt[1] * prod(sratios[1:j-1]))
-#     end
-#     m1 = 10^logmass ./ sum(coeffs)
-#     return m1 .* coeffs
-# end
-
-
-function Base.show(io::IO, pr::ProspectResults)
-    println(io, "ProspectResults Summary")
-    println(io, "────────────────────────")
-    println(io, "Chain dataframe:        ", size(pr.chain, 1), " rows × ", size(pr.chain, 2), " columns")
-    println(io, "Run parameters:         ", length(pr.runparams), " entries")
-    println(io, "Bestfit parameters:     ", length(pr.bestfit), " entries")
-    println(io, "Sampling info:          ", length(pr.sampling), " entries")
-    println(io, "Observational data:     ", length(pr.obs), " entries")
+"Maximum-likelihood value of a single parameter, looked up via `theta_labels`."
+function bestfit(p::ProspectResults, param::AbstractString)
+    i = findfirst(==(param), p.sampling["theta_labels"])
+    i === nothing && throw(KeyError(param))
+    return p.bestfit["parameter"][i]
 end
 
-function Base.show(io::IO, po::ProspectorObs)
-    println(io, "ProspectorObs")
-    println(io, "──────────────")
-    println(io, "Entries: ", length(po.obs))
-    println(io, "Keys:    ", join(keys(po.obs), ", "))
+get_obs_sflux(p::ProspectResults) = get(p.obs, "spectrum", nothing)
+get_obs_swave(p::ProspectResults) = get(p.obs, "wavelength", nothing)
+get_obs_serr(p::ProspectResults) = get(p.obs, "unc", nothing)
+get_obs_pflux(p::ProspectResults) = get(p.obs, "maggies", nothing)
+get_obs_pwave(p::ProspectResults) = get(p.obs, "phot_wave", nothing)
+get_obs_perr(p::ProspectResults) = get(p.obs, "maggies_unc", nothing)
+
+get_bf_sflux(p::ProspectResults) = get(p.bestfit, "spectrum", nothing)
+get_bf_swave(p::ProspectResults) = get(p.bestfit, "wavelength", nothing)
+get_bf_pflux(p::ProspectResults) = get(p.bestfit, "photometry", nothing)
+get_bf_pwave(p::ProspectResults) = get(p.bestfit, "phot_wave", nothing)
+get_bf_cont(p::ProspectResults) = get(p.bestfit, "speccont", nothing)
+get_bf_calib(p::ProspectResults) = get(p.bestfit, "speccal", nothing)
+get_bf_sed(p::ProspectResults) = get(p.bestfit, "full_sed", nothing)
+get_full_grid(p::ProspectResults) = get(p.bestfit, "full_grid", nothing)
+
+maggies2μJy(mag::Real) = mag * 1e6 * 3631
+maggies2μJy(::Nothing) = nothing
+
+_scalar(x) = x isa AbstractArray ? first(x) : x
+
+"""
+    get_mass(p, est=default_estimator(p)) -> Float64
+
+log₁₀ of the *surviving* stellar mass: `logmass + log₁₀(mfrac)`, where `logmass`
+is the total formed mass (estimated with `est`) and `mfrac` the surviving fraction.
+"""
+function get_mass(p::ProspectResults, est::Estimator=default_estimator(p))
+    return estimate(p, "logmass", est) + log10(_scalar(p.bestfit["mfrac"]))
 end
 
-function Base.show(io::IO, pb::ProspectorBestFit)
-    println(io, "ProspectorBestFit")
-    println(io, "──────────────────")
-    println(io, "Entries: ", length(pb.bestfit))
-    println(io, "Keys:    ", join(keys(pb.bestfit), ", "))
+"""
+    quantiles(p, param; q=[0.16, 0.5, 0.84], weighted=has_weights(p))
+
+Posterior quantiles of `param` from the chain. Weighted by importance weights when
+`weighted` is true (the default whenever a `weights` column is present).
+"""
+function quantiles(p::ProspectResults, param::AbstractString;
+                   q=[0.16, 0.5, 0.84], weighted::Bool=has_weights(p))
+    col = p.chain[!, param]
+    weighted || return quantile(collect(skipmissing(col)), q)
+    has_weights(p) || throw(ArgumentError("chain has no `$WEIGHTS_COL` column"))
+    return weighted_quantile(col, p.chain[!, WEIGHTS_COL], q)
 end
 
-function Base.show(io::IO, ps::ProspectorSampling)
-    println(io, "ProspectorSampling")
-    println(io, "───────────────────")
-    println(io, "Entries: ", length(ps.sampling))
-    println(io, "Keys:    ", join(keys(ps.sampling), ", "))
+# =============================================================================
+# Display
+# =============================================================================
+
+function Base.show(io::IO, p::ProspectResults)
+    println(io, "ProspectResults: ", nrow(p.chain), "×", length(labels(p)), " chain",
+            has_weights(p) ? " (weighted)" : "", ", z=", get_z(p))
+    params = labels(p)
+    isempty(params) && return
+    @printf(io, "%-22s %12s %12s %12s\n", "parameter", "16%", "50%", "84%")
+    for name in params
+        q16, q50, q84 = quantiles(p, name)
+        @printf(io, "%-22s %12.4g %12.4g %12.4g\n", name, q16, q50, q84)
+    end
+    print(io, "estimator: ", nameof(typeof(default_estimator(p))))
 end
-    
-end
+
+Base.show(io::IO, p::ProspectorObs) = print(io, "ProspectorObs(", length(p.obs), " keys: ", join(keys(p.obs), ", "), ")")
+Base.show(io::IO, p::ProspectorBestFit) = print(io, "ProspectorBestFit(", length(p.bestfit), " keys: ", join(keys(p.bestfit), ", "), ")")
+Base.show(io::IO, p::ProspectorSampling) = print(io, "ProspectorSampling(", length(p.sampling), " keys: ", join(keys(p.sampling), ", "), ")")
+
+end # module

@@ -2,25 +2,23 @@ module ProspectorUtils
 
 include("DataUtils.jl")
 using .DataUtils
-export ProspectResults, ProspectorBestFit, ProspectorObs, ProspectorObs, get_mass
-export maggies2μJy, get_z, labels, bestfit, get_obs_sflux, get_obs_swave, get_obs_serr
-export get_obs_pflux, get_obs_pwave, get_obs_perr, get_bf_sflux, get_full_grid, get_bf_sed, get_bf_swave, get_bf_pflux, get_bf_pwave
-export get_bf_cont, get_bf_calib, n_bins
+export AbstractProspectResult, ProspectResults, ProspectorObs, ProspectorBestFit, ProspectorSampling
+export Estimator, BestFit, Median, WeightedMedian, default_estimator, has_weights, estimate
+export quantiles, weighted_quantile, weighted_median
+export get_mass, maggies2μJy, get_z, labels, bestfit, n_bins
+export get_obs_sflux, get_obs_swave, get_obs_serr, get_obs_pflux, get_obs_pwave, get_obs_perr
+export get_bf_sflux, get_bf_swave, get_bf_pflux, get_bf_pwave, get_bf_sed, get_bf_cont, get_bf_calib, get_full_grid
 
 include("SFHUtils.jl")
 using .SFHUtils
-export zred_to_agebins, build_agebins, logmass_to_masses, get_sfh, pyshow, get_sfr
+export zred_to_agebins, build_agebins, get_agebins, logmass_to_masses, get_sfh, get_sfr, sfh_lookback
 
 include("PlotUtils.jl")
 using .PlotUtils
-export AbstractProspectPlot, AbstractSedPlot, AbstractPhotoPlot, AbstractErrors
-export ObsSpecPlot, BFSpecPlot, DensityPlot, ObsPhotoPlot, BFPhotoPlot, BinnedSFH, BFSedPlot
-export Errors, MaskedSpecPlot, Calibration, SFHErrors
-export PlotCommand, Mask, MaskedPhotoPlot
-export get_plot_function, get_error_plot_function
-export get_plot_data
-export render!
-
-
+export AbstractProspectPlot, AbstractSedPlot, AbstractPhotoPlot, AbstractMultiplier, AbstractErrors
+export ObsSpecPlot, BFSpecPlot, BFSedPlot, DensityPlot, ObsPhotoPlot, BFPhotoPlot, BinnedSFH, LineIndicators
+export MaskedSpecPlot, MaskedPhotoPlot
+export SedErrors, PhotoErrors, SFHErrors, Errors, Mask, Calibration, PlotCommand
+export get_zorder, get_plot_function, get_error_plot_function, get_plot_data, render!
 
 end # module ProspectorUtils

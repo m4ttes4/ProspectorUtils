@@ -1,148 +1,100 @@
 module SFHUtils
-# -----------------------------------------------------------------------------
-# External dependencies
-# -----------------------------------------------------------------------------
+
 using PythonCall
-using Statistics
+using StatsBase
 using DataFrames
 using ..DataUtils
 
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
-export zred_to_agebins, build_agebins, logmass_to_masses, get_sfh, pyshow, get_sfr
+export zred_to_agebins, build_agebins, get_agebins, logmass_to_masses
+export get_sfh, get_sfr, sfh_lookback
 
 """
-    SFHUtils – Star‑Formation History utilities
+SFHUtils – Star-Formation History utilities mirroring Prospector conventions for
+age-bin construction and mass partitioning.
 
-A lightweight collection of helpers mirroring the Prospector conventions for
-age–bin construction and mass‑partitioning.
-
-Public API
-----------
-* [`zred_to_agebins`] – build age bins from redshift.
-* [`build_agebins`]    – construct Prospector‑style age bins from universe age.
-* [`logmass_to_masses`] – convert a total mass + SFR ratios to per‑bin masses.
-
-All routines avoid external dependencies except for `PythonCall` → `astropy` to
-translate redshift into universe age.  If `astropy` is unavailable an
-informative error is thrown.
+Age bins are read straight from the Prospector output when available
+(`bestfit/agebins`); otherwise they are reconstructed from redshift using the
+Planck18 cosmology via *astropy* (`zred_to_agebins`).
 """
-
+SFHUtils
 
 # -----------------------------------------------------------------------------
-# Internal helpers
+# Age bins
 # -----------------------------------------------------------------------------
 
-pyshow() = let 
-    cosmo = pyimport("astropy")
-    display(cosmo)
-end
-
-"Return the age of the universe at redshift `zred` (Gyr) using Planck18 cosmology."
+"Age of the universe at redshift `zred` (Gyr) from Planck18 (astropy)."
 function _universe_age(zred::Real)
-    # _cosmology === nothing &&
-    #     throw(Error("Astropy cosmology is required for zred_to_agebins (missing astropy)",))
-    let
-        cosmo = pyimport("astropy.cosmology")
-        cosmo === nothing && throw(Error("Astropy cosmology is required for zred_to_agebins (missing astropy)",))
-        return pyconvert(Float64, cosmo.Planck18.age(zred).value)
-    end
+    cosmo = pyimport("astropy.cosmology")
+    return pyconvert(Float64, cosmo.Planck18.age(zred).value)
 end
 
-@inline _mydiff(bin::NTuple{2,T}) where {T<:Real} = 10.0^bin[2] - 10.0^bin[1]
-@inline _mydiff(bin::Vector{T}) where {T<:Real} = 10.0^bin[2] - 10.0^bin[1]
-
-
-"""
-    zred_to_agebins(zred, nbins) -> Vector{NTuple{2,Float64}}
-
-Build Prospector‑style age bins (log₁₀ years) for a universe at redshift `zred`.
-
-Arguments
----------
-* `zred::Real`  – Cosmological redshift.
-* `nbins::Int`  – Number of bins **≥ 4**.
-
-Notes
------
-* Cosmology: Planck18 via *astropy*.
-* Oldest bin upper limit: 90 % of the universe age.
-"""
-function zred_to_agebins(zred::Real, nbins::Integer)
-    tuniv = _universe_age(zred)               # [Gyr]
-    return build_agebins(tuniv=tuniv, nbins=nbins)
-end
+@inline _bin_width(bin) = 10.0^bin[2] - 10.0^bin[1]
 
 """
     build_agebins(; tuniv=13.7, nbins=7) -> Vector{NTuple{2,Float64}}
 
-Return Prospector‑style age bins for a universe age `tuniv` (Gyr).
-This function has been tested with prospector bin creation function 
-and has the same results
-Keyword arguments
------------------
-* `tuniv::Real = 13.7` – Universe age in **Gyr**.
-* `nbins::Int  = 7`    – Number of bins **≥ 4**.
-
-Each element of the returned vector is `(log10(tₗ), log10(tᵤ))` in **years**.
+Prospector-style age bins for a universe age `tuniv` (Gyr). Each element is
+`(log₁₀ t_low, log₁₀ t_high)` in years. Matches Prospector's bin construction.
 """
 function build_agebins(; tuniv::Real=13.7, nbins::Integer=7)
-
     nbins < 4 && throw(ArgumentError("nbins must be ≥ 4 (got $nbins)"))
-
     tbinmax = (tuniv * 0.9) * 1e9
     lim1, lim2 = 7.4772, 8.0
-
-    # Compute logarithmically spaced bins
-    log_bins = range(lim2, stop=log10(tbinmax), length=nbins - 2) |> collect
-    agelims = vcat([0, lim1], log_bins, [log10(tuniv * 1e9)])
-
-    # Construct the agebins matrix
-    agebins = [(agelims[i], agelims[i+1]) for i in 1:(length(agelims)-1)]#
-    #agebins = hcat(agelims[1:end-1], agelims[2:end])
-    return agebins
+    log_bins = collect(range(lim2, stop=log10(tbinmax), length=nbins - 2))
+    agelims = vcat([0.0, lim1], log_bins, [log10(tuniv * 1e9)])
+    return [(agelims[i], agelims[i+1]) for i in 1:(length(agelims)-1)]
 end
+
+"Build Prospector-style age bins for a universe at redshift `zred` (needs astropy)."
+zred_to_agebins(zred::Real, nbins::Integer) = build_agebins(tuniv=_universe_age(zred), nbins=nbins)
+
+# Convert a stored agebins matrix (either nbins×2 or 2×nbins) to a tuple vector.
+function _agebins_to_tuples(m::AbstractMatrix)
+    if size(m, 2) == 2
+        return [(Float64(m[i, 1]), Float64(m[i, 2])) for i in axes(m, 1)]
+    elseif size(m, 1) == 2
+        return [(Float64(m[1, j]), Float64(m[2, j])) for j in axes(m, 2)]
+    end
+    throw(ArgumentError("unexpected agebins shape $(size(m))"))
+end
+
+"""
+    get_agebins(p) -> Vector{NTuple{2,Float64}}
+
+Age bins for a result: read from `bestfit/agebins` when stored by Prospector,
+otherwise reconstructed from redshift (`zred_to_agebins`, requires astropy).
+"""
+function get_agebins(p::ProspectResults)
+    stored = get(p.bestfit, "agebins", nothing)
+    stored isa AbstractMatrix && return _agebins_to_tuples(stored)
+    return zred_to_agebins(get_z(p), n_bins(p))
+end
+
+# -----------------------------------------------------------------------------
+# Mass partitioning
+# -----------------------------------------------------------------------------
 
 """
     logmass_to_masses(logmass, logsfr_ratios, agebins) -> Vector{Float64}
 
-Partition the total stellar mass across age bins following Prospector.
-
-Parameters
-----------
-* `logmass::Real`               – log₁₀(∑ Mᵢ).
-* `logsfr_ratios::AbstractVector{<:Real}` – log₁₀(SFRⱼ / SFRⱼ₊₁) for `nbins-1` bins.
-* `agebins::AbstractVector{<:NTuple{2,<:Real}}` – Age bin limits from `build_agebins`.
-
-Returns
--------
-`Vector{Float64}` with the individual Mᵢ (same order as `agebins`).
+Partition the total formed stellar mass across age bins following Prospector.
+`logmass` is log₁₀(∑ Mᵢ); `logsfr_ratios` holds the `nbins-1` log₁₀(SFRⱼ/SFRⱼ₊₁).
 """
-function logmass_to_masses(
-    logmass::Real,
-    logsfr_ratios::AbstractVector{<:Real},
-    agebins::AbstractVector{<:NTuple{2,<:Real}}
-)::Vector{Float64}
-
+function logmass_to_masses(logmass::Real, logsfr_ratios::AbstractVector{<:Real},
+                           agebins::AbstractVector{<:NTuple{2,<:Real}})::Vector{Float64}
     nbins = length(agebins)
     length(logsfr_ratios) == nbins - 1 ||
-        throw(DimensionMismatch("Expected $(nbins - 1) SFR ratios, got $(length(logsfr_ratios))"))
+        throw(DimensionMismatch("expected $(nbins - 1) SFR ratios, got $(length(logsfr_ratios))"))
 
-    # Convert to Float64 for type stability and clamp values
-    sratios = map(x -> 10.0^clamp(float(x), -10.0, 10.0), logsfr_ratios)
-    dt = map(_mydiff, agebins)
-
-    if dt[1] == 0.0
-        throw(ArgumentError("First age bin width is zero, cannot normalize mass coefficients."))
-    end
+    sratios = @. 10.0^clamp(float(logsfr_ratios), -10.0, 10.0)
+    dt = map(_bin_width, agebins)
+    dt[1] == 0.0 && throw(ArgumentError("first age bin has zero width; cannot normalize"))
 
     coeffs = Vector{Float64}(undef, nbins)
     coeffs[1] = 1.0
-
     acc = 1.0
     for j in 2:nbins
-        acc *= sratios[j - 1]
+        acc *= sratios[j-1]
         coeffs[j] = dt[j] / (dt[1] * acc)
     end
 
@@ -150,130 +102,64 @@ function logmass_to_masses(
     return m1 .* coeffs
 end
 
+"""
+    logmass_to_masses(p, est=default_estimator(p); agebins=get_agebins(p))
 
-function logmass_to_masses(p::ProspectResults)::Vector{Float64}
-    labels = filter(x -> occursin("logsfr_ratios", x), names(p.chain))
-    # ratios = map(name -> median(skipmissing(p.chain[!, name])), labels)
-    ratios = map(name -> bestfit(p, name), labels)
-    agebins = zred_to_agebins(get_z(p), n_bins(p))
-    #TODO questa logmass è la bestfit!
-    logmass = get_mass(p)#float(median(skipmissing(p.chain[!, "logmass"])))
+Per-bin formed masses for a result, using the point estimate `est` for `logmass`
+and the SFR ratios.
+"""
+function logmass_to_masses(p::ProspectResults, est::Estimator=default_estimator(p);
+                           agebins=get_agebins(p))::Vector{Float64}
+    ratio_labels = filter(n -> occursin("logsfr_ratios", n), labels(p))
+    logmass = estimate(p, "logmass", est)
+    ratios = [estimate(p, n, est) for n in ratio_labels]
     return logmass_to_masses(logmass, ratios, agebins)
 end
 
-
-function logmass_to_masses(
-    p::ProspectResults,
-    zred::Real,
-    quantiles::AbstractVector{<:Real}
-)::Vector{Vector{Float64}}
-
-    logmasses = quantile(p.chain.logmass, quantiles)
-    sfr_labels = filter(name -> occursin("logsfr_ratios", name), names(p.chain))
-    ratios = map(name -> median(skipmissing(p.chain[!, name])), sfr_labels)
-    agebins = zred_to_agebins(float(zred), n_bins(p))
-
-    return [logmass_to_masses(mass, ratios, agebins) for mass in logmasses]
-end
-
-function logmass_to_masses(p::ProspectResults, agebins::Vector{Tuple{Float64, Float64}})
-    logmass = median(p.chain.logmass)
-    labels = names(p.chain)[findall(x -> occursin.("logsfr_ratios", x), names(p.chain))]
-    ratios = [median(p.chain[!, name]) for name in labels]
-    return logmass_to_masses(logmass, ratios, agebins)
-end
-
+# -----------------------------------------------------------------------------
+# Star-formation history
+# -----------------------------------------------------------------------------
 
 """
-    get_sfh(results::ProspectResults; normalize=false, safe=true, return_mass=false)
-        -> (lookback::Vector{Float64}, sfh::Vector{Float64})
+    sfh_lookback(agebins) -> Vector{Float64}
 
-Compute the star formation history (SFH) from a `ProspectResults` object.
-
-# Keyword arguments
-- `normalize::Bool=false`: if true, normalize SFR to unity.
-- `safe::Bool=true`: apply checks to avoid NaNs, negative SFRs, or zero-duration bins.
-- `return_mass::Bool=false`: if true, return tuple `(lookback, sfh, mass)`.
-
-# Returns
-- `lookback`: vector of lookback times in Gyr (bin edges).
-- `sfh`: log₁₀ of SFR values in each bin.
-- optionally, `mass`: per-bin stellar mass.
-
-# Notes
-- `zred_to_agebins` is used to recompute bins at `get_z(results)`.
-- Assumes age bins are given in log₁₀(years).
-- Bins with zero width or invalid entries are skipped if `safe=true`.
+Lookback-time bin edges (Gyr) for a stairs-style SFH: a leading near-zero point
+followed by the upper edge of each age bin (offset by the first lower edge),
+matching Prospector's plotting convention.
 """
-function get_sfh(results::ProspectResults; normalize::Bool=false, safe::Bool=true, return_mass::Bool=false)
-    z = get_z(results)
+function sfh_lookback(agebins::AbstractVector{<:NTuple{2,<:Real}})
+    offset = 10.0^first(agebins[1]) / 1e9
+    return vcat(1e-9, offset .+ 10.0 .^ last.(agebins) ./ 1e9)
+end
 
-    nbins = n_bins(results)#sum(occursin.("logsfr_ratios", names(results.chain)))+1 
-    agebins = zred_to_agebins(z, nbins)
-    mass = logmass_to_masses(results, agebins)
+"""
+    get_sfh(p, est=default_estimator(p); normalize=false, safe=true, return_mass=false)
+        -> (lookback, sfh[, mass])
 
+Star-formation history from a result. `lookback` are bin edges in Gyr, `sfh` is
+log₁₀(SFR) per bin. `safe` floors non-finite/≤0 SFR to 1e-30; `normalize` scales
+SFR to unit sum; `return_mass` also returns the per-bin formed mass.
+"""
+function get_sfh(p::ProspectResults, est::Estimator=default_estimator(p);
+                 normalize::Bool=false, safe::Bool=true, return_mass::Bool=false)
+    agebins = get_agebins(p)
+    mass = logmass_to_masses(p, est; agebins=agebins)
 
-    initial_bins = first.(agebins)
-    final_bins = last.(agebins)
-
-    Δt = @. 10.0^final_bins - 10.0^initial_bins
+    Δt = @. 10.0^last(agebins) - 10.0^first(agebins)
     sfr = mass ./ Δt
 
-    if safe
-        for i in eachindex(sfr)
-            @inbounds x = sfr[i]
-            @inbounds sfr[i] = (isfinite(x) && x > 0) ? x : 1e-30
-        end
-    end
-    
-    lookback = 10 .^ initial_bins[1] ./ 1e9 .+ 10 .^ final_bins ./ 1e9
-    lookback = vcat(1e-9, lookback)  # Prepend tiny lookback time to match bins
+    safe && map!(x -> (isfinite(x) && x > 0) ? x : 1e-30, sfr, sfr)
+    normalize && (sfr ./= sum(sfr))
 
-    if normalize
-        sfr ./= sum(sfr)
-    end
-
+    lookback = sfh_lookback(agebins)
     sfh = log10.(vcat(sfr[1], sfr))
-
     return return_mass ? (lookback, sfh, mass) : (lookback, sfh)
 end
 
-
-
-@views function get_sfr(results::ProspectResults; nbins=3)
-    lookback, sfh = get_sfh(results)
-
-    return mean(sfh[1:nbins])
+"Mean log₁₀(SFR) over the most recent `nbins` SFH bins."
+function get_sfr(p::ProspectResults, est::Estimator=default_estimator(p); nbins::Integer=3)
+    _, sfh = get_sfh(p, est)
+    return mean(@view sfh[1:nbins])
 end
-# function get_sfh_quantiles(results::ProspectResults; normalize::Bool=false, save::Bool=true, return_mass::Bool=false)
-#     z = get_z(results)
-
-#     nbins = n_bins(results)#sum(occursin.("logsfr_ratios", names(results.chain)))+1 
-#     agebins = zred_to_agebins(z, nbins)
-#     mass = logmass_to_masses(results, z, [0.16, 0.5, 0.84])
-
-#     initial_bins = first.(agebins)
-#     final_bins = last.(agebins)
-
-#     Δt = @. 10.0^final_bins - 10.0^initial_bins
-#     sfr = map(x -> x ./ Δt, mass)
-
-#     if safe
-#         for bin in sfr
-#             for i in eachindex(bin)
-#                 @inbounds x = bin[i]
-#                 @inbounds bin[i] = (isfinite(x) && x > 0) ? x : 1e-30
-#             end
-#         end
-#     end
-
-#     if normalize
-#         @warn "Currently normalize the SFH quantile is broken"
-#         sfr ./= sum(sfr)
-#     end
-
-#     sfh = log10.(vcat([sfr[1]], sfr))
-#     return sfh
-# end
 
 end # module
