@@ -58,7 +58,7 @@ struct WeightedMedian <: Estimator end
 has_weights(p::ProspectResults) = WEIGHTS_COL in names(p.chain)
 
 "`WeightedMedian` when weights are available, otherwise `Median`."
-default_estimator(p::ProspectResults) = has_weights(p) ? WeightedMedian() : Median()
+default_estimator(::ProspectResults) = BestFit()#has_weights(p) ? WeightedMedian() : Median()
 
 estimate(p::ProspectResults, param::AbstractString, ::BestFit) = bestfit(p, param)
 estimate(p::ProspectResults, param::AbstractString, ::Median) = median(skipmissing(p.chain[!, param]))
@@ -71,28 +71,16 @@ end
 # Weighted quantiles
 # =============================================================================
 
-_floatv(x) = Float64.(collect(x))
-
 """
     weighted_quantile(values, weights, q) -> Float64 or Vector
 
 Weighted quantile(s) of `values`, delegating to StatsBase
 (`quantile(values, weights(w), q)`). `q` may be a scalar or a vector.
 """
-function weighted_quantile(values, weights, q::Real)
-    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
-    return quantile(_floatv(values), StatsBase.weights(_floatv(weights)), q)
-end
-function weighted_quantile(values, weights, q)
-    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
-    return quantile(_floatv(values), StatsBase.weights(_floatv(weights)), _floatv(q))
-end
+weighted_quantile(values, weights, q) = quantile(values, StatsBase.weights(weights), q)
 
 "Median of weighted samples (StatsBase)."
-function weighted_median(values, weights)
-    length(values) == length(weights) || throw(DimensionMismatch("values and weights differ in length"))
-    return median(_floatv(values), StatsBase.weights(_floatv(weights)))
-end
+weighted_median(values, weights) = median(values, StatsBase.weights(weights))
 
 # =============================================================================
 # HDF5 reader

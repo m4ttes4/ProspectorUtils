@@ -12,9 +12,9 @@ export get_sfh, get_sfr, sfh_lookback
 SFHUtils – Star-Formation History utilities mirroring Prospector conventions for
 age-bin construction and mass partitioning.
 
-Age bins are read straight from the Prospector output when available
-(`bestfit/agebins`); otherwise they are reconstructed from redshift using the
-Planck18 cosmology via *astropy* (`zred_to_agebins`).
+Age bins are reconstructed from redshift using the Planck18 cosmology via
+*astropy* (`zred_to_agebins`). Stored `bestfit/agebins` are intentionally not
+used because they may be inconsistent with the result redshift.
 """
 SFHUtils
 
@@ -48,27 +48,14 @@ end
 "Build Prospector-style age bins for a universe at redshift `zred` (needs astropy)."
 zred_to_agebins(zred::Real, nbins::Integer) = build_agebins(tuniv=_universe_age(zred), nbins=nbins)
 
-# Convert a stored agebins matrix (either nbins×2 or 2×nbins) to a tuple vector.
-function _agebins_to_tuples(m::AbstractMatrix)
-    if size(m, 2) == 2
-        return [(Float64(m[i, 1]), Float64(m[i, 2])) for i in axes(m, 1)]
-    elseif size(m, 1) == 2
-        return [(Float64(m[1, j]), Float64(m[2, j])) for j in axes(m, 2)]
-    end
-    throw(ArgumentError("unexpected agebins shape $(size(m))"))
-end
-
 """
     get_agebins(p) -> Vector{NTuple{2,Float64}}
 
-Age bins for a result: read from `bestfit/agebins` when stored by Prospector,
-otherwise reconstructed from redshift (`zred_to_agebins`, requires astropy).
+Age bins for a result, reconstructed from redshift (`zred_to_agebins`, requires
+astropy). Stored `bestfit/agebins` are ignored because some Prospector outputs
+contain bins that are not limited by the universe age at `get_z(p)`.
 """
-function get_agebins(p::ProspectResults)
-    stored = get(p.bestfit, "agebins", nothing)
-    stored isa AbstractMatrix && return _agebins_to_tuples(stored)
-    return zred_to_agebins(get_z(p), n_bins(p))
-end
+get_agebins(p::ProspectResults) = zred_to_agebins(get_z(p), n_bins(p))
 
 # -----------------------------------------------------------------------------
 # Mass partitioning
@@ -86,7 +73,7 @@ function logmass_to_masses(logmass::Real, logsfr_ratios::AbstractVector{<:Real},
     length(logsfr_ratios) == nbins - 1 ||
         throw(DimensionMismatch("expected $(nbins - 1) SFR ratios, got $(length(logsfr_ratios))"))
 
-    sratios = @. 10.0^clamp(float(logsfr_ratios), -10.0, 10.0)
+    sratios = @. 10.0^clamp(logsfr_ratios, -10.0, 10.0)
     dt = map(_bin_width, agebins)
     dt[1] == 0.0 && throw(ArgumentError("first age bin has zero width; cannot normalize"))
 
@@ -98,7 +85,7 @@ function logmass_to_masses(logmass::Real, logsfr_ratios::AbstractVector{<:Real},
         coeffs[j] = dt[j] / (dt[1] * acc)
     end
 
-    m1 = 10.0^float(logmass) / sum(coeffs)
+    m1 = 10.0^logmass / sum(coeffs)
     return m1 .* coeffs
 end
 

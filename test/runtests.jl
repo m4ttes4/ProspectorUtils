@@ -6,17 +6,18 @@ using ProspectorUtils
 # Synthetic in-memory result (no HDF5 I/O)
 # -----------------------------------------------------------------------------
 function make_result(; weights=true)
-    theta = ["logmass", "logsfr_ratios_1", "logsfr_ratios_2"]
+    theta = ["logmass", "logsfr_ratios_1", "logsfr_ratios_2", "logsfr_ratios_3"]
     chain = DataFrame(
         logmass         = [9.0, 9.2, 9.4, 9.6, 9.8],
         logsfr_ratios_1 = [0.0, 0.1, -0.1, 0.2, -0.2],
         logsfr_ratios_2 = [0.0, -0.1, 0.1, -0.2, 0.2],
+        logsfr_ratios_3 = [0.1, 0.0, -0.1, 0.1, 0.0],
     )
     weights && (chain.weights = [1.0, 1.0, 1.0, 1.0, 1.0])
     bestfit = Dict{String,Any}(
-        "parameter" => [9.5, 0.05, -0.05],   # aligned to theta order
+        "parameter" => [9.5, 0.05, -0.05, 0.02],   # aligned to theta order
         "mfrac"     => 0.5,
-        "agebins"   => [0.0 8.0; 8.0 8.5; 8.5 9.0],  # 3 bins × 2 (log10 yr)
+        "agebins"   => [0.0 8.0; 8.0 8.5; 8.5 9.0; 9.0 13.7],
     )
     sampling = Dict{String,Any}("theta_labels" => theta)
     runparams = Dict{String,Any}("redshift" => 5.0)
@@ -33,8 +34,8 @@ end
         @test weighted_quantile(v, w, [0.0, 1.0]) ≈ [1.0, 4.0]
         # weight concentrated on low values skews the median below the unweighted one
         @test weighted_median([1.0, 2.0, 3.0, 4.0, 5.0], [10.0, 10.0, 1.0, 1.0, 1.0]) < 3.0  # unweighted median = 3
-        @test_throws DimensionMismatch weighted_quantile([1.0, 2.0], [1.0], 0.5)
-        @test_throws DimensionMismatch weighted_median([1.0, 2.0], [1.0])
+        @test_throws ArgumentError weighted_quantile([1.0, 2.0], [1.0], 0.5)
+        @test_throws ArgumentError weighted_median([1.0, 2.0], [1.0])
     end
 
     @testset "estimators" begin
@@ -65,7 +66,7 @@ end
         @test issorted(q)
         @test q[2] ≈ 9.4                      # equal weights → median
         @test quantiles(p, "logmass")[2] ≈ 9.4  # weighted default
-        @test labels(p) == ["logmass", "logsfr_ratios_1", "logsfr_ratios_2"]  # excludes weights
+        @test labels(p) == ["logmass", "logsfr_ratios_1", "logsfr_ratios_2", "logsfr_ratios_3"]  # excludes weights
     end
 
     @testset "logmass_to_masses" begin
@@ -75,7 +76,7 @@ end
         @test length(m) == 3
         @test sum(m) ≈ 10.0^9.0
         @test_throws DimensionMismatch logmass_to_masses(9.0, [0.0], agebins)
-        # estimator path uses stored agebins (no astropy)
+        # estimator path reconstructs agebins from redshift.
         p = make_result()
         @test sum(logmass_to_masses(p, BestFit())) ≈ 10.0^9.5
     end
@@ -96,24 +97,20 @@ end
         @test issorted(lb)
     end
 
-    @testset "get_agebins orientation" begin
-        # Prospector/HDF5 stores agebins transposed as 2×nbins; get_agebins must
-        # read it as nbins tuples regardless of orientation.
-        theta = ["logmass", "logsfr_ratios_1", "logsfr_ratios_2"]
-        chain = DataFrame(logmass=[9.0], logsfr_ratios_1=[0.0], logsfr_ratios_2=[0.0])
+    @testset "get_agebins reconstructs from redshift" begin
+        # Stored bestfit/agebins can be inconsistent with the object redshift.
+        # get_agebins must ignore them and rebuild Prospector bins from zred.
+        theta = ["logmass", "logsfr_ratios_1", "logsfr_ratios_2", "logsfr_ratios_3"]
+        chain = DataFrame(logmass=[9.0], logsfr_ratios_1=[0.0], logsfr_ratios_2=[0.0], logsfr_ratios_3=[0.0])
         sampling = Dict{String,Any}("theta_labels" => theta)
-        bf_rowmajor = Dict{String,Any}("agebins" => [0.0 8.0; 8.0 8.5; 8.5 9.0])      # 3×2
-        bf_colmajor = Dict{String,Any}("agebins" => [0.0 8.0 8.5; 8.0 8.5 9.0])       # 2×3 (real layout)
-        for bf in (bf_rowmajor, bf_colmajor)
-            p = ProspectResults(chain, Dict{String,Any}("redshift" => 5.0), bf, sampling, Dict{String,Any}())
-            ab = get_agebins(p)
-            @test ab == [(0.0, 8.0), (8.0, 8.5), (8.5, 9.0)]
-        end
+        bf = Dict{String,Any}("agebins" => [0.0 8.0; 8.0 8.5; 8.5 9.0; 9.0 13.7])
+        p = ProspectResults(chain, Dict{String,Any}("redshift" => 5.0), bf, sampling, Dict{String,Any}())
+        @test get_agebins(p) == zred_to_agebins(5.0, 4)
     end
 
     @testset "get_sfh / get_sfr" begin
         p = make_result()
-        lookback, sfh = get_sfh(p)            # uses stored agebins → no astropy
+        lookback, sfh = get_sfh(p)
         @test length(lookback) == length(sfh) == n_bins(p) + 1
         @test all(isfinite, sfh)
         lookback, sfh, mass = get_sfh(p; return_mass=true)
@@ -127,7 +124,7 @@ end
     end
 
     @testset "n_bins" begin
-        @test n_bins(make_result()) == 3
+        @test n_bins(make_result()) == 4
     end
 end
 
