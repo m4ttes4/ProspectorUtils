@@ -1,8 +1,8 @@
 module DataUtils
 
 export AbstractProspectResult, ProspectResults, ProspectorObs, ProspectorBestFit, ProspectorSampling
-export Estimator, BestFit, Median, WeightedMedian, default_estimator, has_weights, estimate
-export quantiles, weighted_quantile, weighted_median
+export Estimator, BestFit, Median, WeightedMedian, has_weights, estimate
+export quantiles
 export get_mass, maggies2μJy, get_z, labels, bestfit, n_bins
 export get_obs_sflux, get_obs_swave, get_obs_serr, get_obs_pflux, get_obs_pwave, get_obs_perr
 export get_bf_sflux, get_bf_swave, get_bf_pflux, get_bf_pwave, get_bf_sed, get_bf_cont, get_bf_calib, get_full_grid
@@ -13,7 +13,6 @@ using JSON
 using StatsBase
 using Printf
 
-const H5_GROUPS = ("obs", "bestfit", "sampling")
 const WEIGHTS_COL = "weights"
 
 # =============================================================================
@@ -31,14 +30,20 @@ mutable struct ProspectResults <: AbstractProspectResult
     obs::Dict{String,Any}
 end
 
-for (T, field) in ((:ProspectorObs, :obs), (:ProspectorBestFit, :bestfit), (:ProspectorSampling, :sampling))
-    @eval begin
-        mutable struct $T <: AbstractProspectResult
-            $field::Dict{String,Any}
-        end
-        $T(r::ProspectResults) = $T(getfield(r, $(QuoteNode(field))))
-    end
+mutable struct ProspectorObs <: AbstractProspectResult
+    obs::Dict{String,Any}
 end
+ProspectorObs(r::ProspectResults) = ProspectorObs(r.obs)
+
+mutable struct ProspectorBestFit <: AbstractProspectResult
+    bestfit::Dict{String,Any}
+end
+ProspectorBestFit(r::ProspectResults) = ProspectorBestFit(r.bestfit)
+
+mutable struct ProspectorSampling <: AbstractProspectResult
+    sampling::Dict{String,Any}
+end
+ProspectorSampling(r::ProspectResults) = ProspectorSampling(r.sampling)
 
 # =============================================================================
 # Point estimators
@@ -57,49 +62,33 @@ struct WeightedMedian <: Estimator end
 "True when the chain carries a `weights` column (dynesty importance weights)."
 has_weights(p::ProspectResults) = WEIGHTS_COL in names(p.chain)
 
-"`WeightedMedian` when weights are available, otherwise `Median`."
-default_estimator(::ProspectResults) = BestFit()#has_weights(p) ? WeightedMedian() : Median()
-
 estimate(p::ProspectResults, param::AbstractString, ::BestFit) = bestfit(p, param)
 estimate(p::ProspectResults, param::AbstractString, ::Median) = median(skipmissing(p.chain[!, param]))
 function estimate(p::ProspectResults, param::AbstractString, ::WeightedMedian)
     has_weights(p) || throw(ArgumentError("chain has no `$WEIGHTS_COL` column; WeightedMedian unavailable"))
-    return weighted_median(p.chain[!, param], p.chain[!, WEIGHTS_COL])
+    return median(p.chain[!, param], StatsBase.weights(p.chain[!, WEIGHTS_COL]))
 end
 
 # =============================================================================
 # Weighted quantiles
 # =============================================================================
 
-"""
-    weighted_quantile(values, weights, q) -> Float64 or Vector
-
-Weighted quantile(s) of `values`, delegating to StatsBase
-(`quantile(values, weights(w), q)`). `q` may be a scalar or a vector.
-"""
-weighted_quantile(values, weights, q) = quantile(values, StatsBase.weights(weights), q)
-
-"Median of weighted samples (StatsBase)."
-weighted_median(values, weights) = median(values, StatsBase.weights(weights))
-
 # =============================================================================
 # HDF5 reader
 # =============================================================================
 
-# Attributes (Val{true}): JSON-decode string attributes when possible.
-function _read_group(f::HDF5.File, path::String, ::Val{true})
-    haskey(f, path) || return Dict{String,Any}()
-    res = Dict{String,Any}()
-    for key in keys(attrs(f[path]))
-        res[key] = _maybe_json(read_attribute(f[path], key))
+function _read_group(f::HDF5.File, path::String; at::Bool=false)
+    if at
+        haskey(f, path) || return Dict{String,Any}()
+        res = Dict{String,Any}()
+        for key in keys(attrs(f[path]))
+            res[key] = _maybe_json(read_attribute(f[path], key))
+        end
+        return res
+    else
+        haskey(f, path) ? read(f[path]) : nothing
     end
-    return res
 end
-
-# Datasets (Val{false}): plain read.
-_read_group(f::HDF5.File, path::String, ::Val{false}) = haskey(f, path) ? read(f[path]) : nothing
-
-_read_group(f::HDF5.File, path::String; at::Bool=false) = _read_group(f, path, Val(at))
 
 function _maybe_json(x)
     (x isa AbstractString || x isa Vector{UInt8}) || return x
@@ -111,9 +100,11 @@ function _maybe_json(x)
     end
 end
 
-# NamedTuple(:obs, :bestfit, :sampling) of the three groups.
-_read_all_groups(f::HDF5.File; at::Bool=false) =
-    NamedTuple{(:obs, :bestfit, :sampling)}(ntuple(i -> _read_group(f, H5_GROUPS[i]; at=at), length(H5_GROUPS)))
+_read_all_groups(f::HDF5.File; at::Bool=false) = (
+    obs      = _read_group(f, "obs"; at=at),
+    bestfit  = _read_group(f, "bestfit"; at=at),
+    sampling = _read_group(f, "sampling"; at=at),
+)
 
 function _get_run_params(f::HDF5.File)::Dict{String,Any}
     try
@@ -231,12 +222,12 @@ maggies2μJy(::Nothing) = nothing
 _scalar(x) = x isa AbstractArray ? first(x) : x
 
 """
-    get_mass(p, est=default_estimator(p)) -> Float64
+    get_mass(p, est=BestFit()) -> Float64
 
 log₁₀ of the *surviving* stellar mass: `logmass + log₁₀(mfrac)`, where `logmass`
 is the total formed mass (estimated with `est`) and `mfrac` the surviving fraction.
 """
-function get_mass(p::ProspectResults, est::Estimator=default_estimator(p))
+function get_mass(p::ProspectResults, est::Estimator=BestFit())
     return estimate(p, "logmass", est) + log10(_scalar(p.bestfit["mfrac"]))
 end
 
@@ -251,7 +242,7 @@ function quantiles(p::ProspectResults, param::AbstractString;
     col = p.chain[!, param]
     weighted || return quantile(collect(skipmissing(col)), q)
     has_weights(p) || throw(ArgumentError("chain has no `$WEIGHTS_COL` column"))
-    return weighted_quantile(col, p.chain[!, WEIGHTS_COL], q)
+    return quantile(col, StatsBase.weights(p.chain[!, WEIGHTS_COL]), q)
 end
 
 # =============================================================================
@@ -268,7 +259,7 @@ function Base.show(io::IO, p::ProspectResults)
         q16, q50, q84 = quantiles(p, name)
         @printf(io, "%-22s %12.4g %12.4g %12.4g\n", name, q16, q50, q84)
     end
-    print(io, "estimator: ", nameof(typeof(default_estimator(p))))
+    print(io, "estimator: BestFit")
 end
 
 Base.show(io::IO, p::ProspectorObs) = print(io, "ProspectorObs(", length(p.obs), " keys: ", join(keys(p.obs), ", "), ")")
