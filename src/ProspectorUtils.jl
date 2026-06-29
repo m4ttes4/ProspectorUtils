@@ -3,8 +3,8 @@ module ProspectorUtils
 include("DataUtils.jl")
 using .DataUtils
 export AbstractProspectResult, ProspectResults, ProspectorObs, ProspectorBestFit, ProspectorSampling
-export Estimator, BestFit, Median, WeightedMedian, default_estimator, has_weights, estimate
-export quantiles, weighted_quantile, weighted_median
+export Estimator, BestFit, Median, WeightedMedian, has_weights, estimate
+export quantiles
 export get_mass, maggies2μJy, get_z, labels, bestfit, n_bins
 export get_obs_sflux, get_obs_swave, get_obs_serr, get_obs_pflux, get_obs_pwave, get_obs_perr
 export get_bf_sflux, get_bf_swave, get_bf_pflux, get_bf_pwave, get_bf_sed, get_bf_cont, get_bf_calib, get_full_grid

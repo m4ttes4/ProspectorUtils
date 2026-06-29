@@ -26,29 +26,15 @@ end
 
 @testset "ProspectorUtils" begin
 
-    @testset "weighted quantile / median" begin
-        v = [1.0, 2.0, 3.0, 4.0]
-        w = ones(4)
-        @test weighted_median(v, w) ≈ 2.5
-        @test weighted_quantile(v, w, 0.5) ≈ 2.5
-        @test weighted_quantile(v, w, [0.0, 1.0]) ≈ [1.0, 4.0]
-        # weight concentrated on low values skews the median below the unweighted one
-        @test weighted_median([1.0, 2.0, 3.0, 4.0, 5.0], [10.0, 10.0, 1.0, 1.0, 1.0]) < 3.0  # unweighted median = 3
-        @test_throws ArgumentError weighted_quantile([1.0, 2.0], [1.0], 0.5)
-        @test_throws ArgumentError weighted_median([1.0, 2.0], [1.0])
-    end
-
     @testset "estimators" begin
         p = make_result()
         @test has_weights(p)
-        @test default_estimator(p) isa WeightedMedian
         @test estimate(p, "logmass", BestFit()) == 9.5
         @test estimate(p, "logmass", Median()) ≈ 9.4
         @test estimate(p, "logmass", WeightedMedian()) ≈ 9.4
 
         pnw = make_result(weights=false)
         @test !has_weights(pnw)
-        @test default_estimator(pnw) isa Median
         @test_throws ArgumentError estimate(pnw, "logmass", WeightedMedian())
     end
 
@@ -116,6 +102,9 @@ end
         lookback, sfh, mass = get_sfh(p; return_mass=true)
         @test length(mass) == n_bins(p)
         @test isfinite(get_sfr(p; nbins=2))
+        # get_sfr must skip sfh[1] (duplicated youngest-bin stairs point)
+        _, sfh_full = get_sfh(p)
+        @test get_sfr(p; nbins=2) ≈ (sfh_full[2] + sfh_full[3]) / 2
     end
 
     @testset "maggies2μJy" begin

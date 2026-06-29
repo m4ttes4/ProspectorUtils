@@ -90,12 +90,12 @@ function logmass_to_masses(logmass::Real, logsfr_ratios::AbstractVector{<:Real},
 end
 
 """
-    logmass_to_masses(p, est=default_estimator(p); agebins=get_agebins(p))
+    logmass_to_masses(p, est=BestFit(); agebins=get_agebins(p))
 
 Per-bin formed masses for a result, using the point estimate `est` for `logmass`
 and the SFR ratios.
 """
-function logmass_to_masses(p::ProspectResults, est::Estimator=default_estimator(p);
+function logmass_to_masses(p::ProspectResults, est::Estimator=BestFit();
                            agebins=get_agebins(p))::Vector{Float64}
     ratio_labels = filter(n -> occursin("logsfr_ratios", n), labels(p))
     logmass = estimate(p, "logmass", est)
@@ -120,14 +120,14 @@ function sfh_lookback(agebins::AbstractVector{<:NTuple{2,<:Real}})
 end
 
 """
-    get_sfh(p, est=default_estimator(p); normalize=false, safe=true, return_mass=false)
+    get_sfh(p, est=BestFit(); normalize=false, safe=true, return_mass=false)
         -> (lookback, sfh[, mass])
 
 Star-formation history from a result. `lookback` are bin edges in Gyr, `sfh` is
 log₁₀(SFR) per bin. `safe` floors non-finite/≤0 SFR to 1e-30; `normalize` scales
 SFR to unit sum; `return_mass` also returns the per-bin formed mass.
 """
-function get_sfh(p::ProspectResults, est::Estimator=default_estimator(p);
+function get_sfh(p::ProspectResults, est::Estimator=BestFit();
                  normalize::Bool=false, safe::Bool=true, return_mass::Bool=false)
     agebins = get_agebins(p)
     mass = logmass_to_masses(p, est; agebins=agebins)
@@ -144,9 +144,10 @@ function get_sfh(p::ProspectResults, est::Estimator=default_estimator(p);
 end
 
 "Mean log₁₀(SFR) over the most recent `nbins` SFH bins."
-function get_sfr(p::ProspectResults, est::Estimator=default_estimator(p); nbins::Integer=3)
+function get_sfr(p::ProspectResults, est::Estimator=BestFit(); nbins::Integer=3)
     _, sfh = get_sfh(p, est)
-    return mean(@view sfh[1:nbins])
+    # sfh[1] duplicates the youngest bin (stairs-plot artifact); real bins start at index 2.
+    return mean(@view sfh[2:nbins+1])
 end
 
 end # module

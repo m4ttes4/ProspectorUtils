@@ -134,8 +134,9 @@ function ProspectResults(filename::String; verbose::Bool=true)
         merge!(data_nt.sampling, attrs_nt.sampling)
 
         # convenience: expose the wavelength grids on the bestfit group too
-        data_nt.bestfit["wavelength"] = data_nt.obs["wavelength"]
-        data_nt.bestfit["phot_wave"] = data_nt.obs["phot_wave"]
+        # (guarded: photometry-only/spectroscopy-only runs lack one of these)
+        haskey(data_nt.obs, "wavelength") && (data_nt.bestfit["wavelength"] = data_nt.obs["wavelength"])
+        haskey(data_nt.obs, "phot_wave") && (data_nt.bestfit["phot_wave"] = data_nt.obs["phot_wave"])
 
         chain = _build_chain_df(data_nt.sampling, attrs_nt.sampling, run_params; verbose=verbose)
         return ProspectResults(chain, run_params, data_nt.bestfit, data_nt.sampling, data_nt.obs)
