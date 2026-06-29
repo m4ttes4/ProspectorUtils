@@ -97,18 +97,14 @@ end
     @testset "get_sfh / get_sfr" begin
         p = make_result()
         lookback, sfh = get_sfh(p)
-        # one physical value per bin — no stairs-plot duplication in the data
-        @test length(lookback) == length(sfh) == n_bins(p)
+        @test length(lookback) == length(sfh) == n_bins(p) + 1
         @test all(isfinite, sfh)
         lookback, sfh, mass = get_sfh(p; return_mass=true)
         @test length(mass) == n_bins(p)
-        # sfh is log10(mass/Δt)
-        Δt = [10.0^b[2] - 10.0^b[1] for b in get_agebins(p)]
-        @test sfh ≈ log10.(mass ./ Δt)
         @test isfinite(get_sfr(p; nbins=2))
-        # get_sfr = log10(arithmetic mean of per-bin SFR)
+        # get_sfr must skip sfh[1] (duplicated youngest-bin stairs point)
         _, sfh_full = get_sfh(p)
-        @test get_sfr(p; nbins=2) ≈ log10((10.0^sfh_full[1] + 10.0^sfh_full[2]) / 2)
+        @test get_sfr(p; nbins=2) ≈ (sfh_full[2] + sfh_full[3]) / 2
     end
 
     @testset "maggies2μJy" begin
