@@ -123,9 +123,12 @@ end
     get_sfh(p, est=BestFit(); normalize=false, safe=true, return_mass=false)
         -> (lookback, sfh[, mass])
 
-Star-formation history from a result. `lookback` are bin edges in Gyr, `sfh` is
-log₁₀(SFR) per bin. `safe` floors non-finite/≤0 SFR to 1e-30; `normalize` scales
-SFR to unit sum; `return_mass` also returns the per-bin formed mass.
+Star-formation history from a result, one value per age bin. `sfh` is
+log₁₀(SFR) = log₁₀(mass / Δt); `lookback` is each bin's older-edge lookback time
+(Gyr). `safe` floors non-finite/≤0 SFR to 1e-30; `normalize` scales SFR to unit
+sum; `return_mass` also returns the per-bin formed mass. All outputs have length
+`n_bins(p)` — the leading-point duplication a stairs plot needs is a rendering
+concern handled in the plotting layer, not here.
 """
 function get_sfh(p::ProspectResults, est::Estimator=BestFit();
                  normalize::Bool=false, safe::Bool=true, return_mass::Bool=false)
@@ -138,16 +141,15 @@ function get_sfh(p::ProspectResults, est::Estimator=BestFit();
     safe && map!(x -> (isfinite(x) && x > 0) ? x : 1e-30, sfr, sfr)
     normalize && (sfr ./= sum(sfr))
 
-    lookback = sfh_lookback(agebins)
-    sfh = log10.(vcat(sfr[1], sfr))
+    lookback = @. 10.0^last(agebins) / 1e9
+    sfh = log10.(sfr)
     return return_mass ? (lookback, sfh, mass) : (lookback, sfh)
 end
 
-"Mean log₁₀(SFR) over the most recent `nbins` SFH bins."
+"Log₁₀ of the mean SFR over the most recent `nbins` SFH bins."
 function get_sfr(p::ProspectResults, est::Estimator=BestFit(); nbins::Integer=3)
     _, sfh = get_sfh(p, est)
-    # sfh[1] duplicates the youngest bin (stairs-plot artifact); real bins start at index 2.
-    return mean(@view sfh[2:nbins+1])
+    return log10(mean(10.0 .^ @view sfh[1:nbins]))
 end
 
 end # module

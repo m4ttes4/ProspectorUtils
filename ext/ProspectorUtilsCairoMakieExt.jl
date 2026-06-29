@@ -8,7 +8,7 @@ using StatsBase
 using Printf
 using ProspectorUtils
 using ProspectorUtils.PlotUtils
-using ProspectorUtils.SFHUtils: zred_to_agebins, logmass_to_masses, get_sfh
+using ProspectorUtils.SFHUtils: zred_to_agebins, logmass_to_masses, get_sfh, get_agebins, sfh_lookback
 
 import ProspectorUtils.PlotUtils: get_plot_function, get_plot_data, render!
 
@@ -87,7 +87,13 @@ function get_plot_data(r::ProspectResults, ::MaskedPhotoPlot, ::typeof(CairoMaki
     return copy(get_obs_pwave(r)), maggies2μJy.(copy(get_obs_pflux(r))), Bool.(get(r.obs, "phot_mask", nothing))
 end
 
-get_plot_data(r::ProspectResults, ::BinnedSFH, ::_XY) = get_sfh(r)
+# Stairs rendering needs n+1 x-edges and a matching y; pad y by repeating the
+# youngest bin so the staircase draws flat from lookback≈0. Plot-only concern —
+# get_sfh returns the n physical SFR values.
+function get_plot_data(r::ProspectResults, ::BinnedSFH, ::_XY)
+    _, sfh = get_sfh(r)
+    return sfh_lookback(get_agebins(r)), vcat(first(sfh), sfh)
+end
 
 # =============================================================================
 # Masked-segment helper
